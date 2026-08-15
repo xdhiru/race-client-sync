@@ -518,7 +518,8 @@ def get_current_occupied_space(active_jobs):
 
 def process_state_machine(config, state, client):
     active_jobs = state["active_jobs"]
-    wait_time_seconds = config["settings"].get("wait_time_minutes", 5.0) * 60
+    wait_time_minutes = config["settings"].get("wait_time_minutes", 5.0)
+    wait_time_seconds = wait_time_minutes * 60
     
     # Query qBittorrent once for all torrent info to save API roundtrips
     try:
@@ -588,7 +589,7 @@ def process_state_machine(config, state, client):
                 
             if batch_completed:
                 batch_idx_str = f" (Batch {job.get('current_batch_index', 0) + 1}/{len(job.get('batches', [1]))})" if "batches" in job else ""
-                logger.info(f"Torrent batch completed downloading locally{batch_idx_str}: {job['name']}. Starting 5-minute delay.")
+                logger.info(f"Torrent batch completed downloading locally{batch_idx_str}: {job['name']}. Starting {wait_time_minutes}-minute delay.")
                 job["state"] = "waiting_5min"
                 job["completion_time"] = time.time()
                 save_state(state)
@@ -597,7 +598,7 @@ def process_state_machine(config, state, client):
         elif current_state == "waiting_5min":
             elapsed = time.time() - job["completion_time"]
             if elapsed >= wait_time_seconds:
-                logger.info(f"5-minute delay completed for {job['name']}. Removing from qBittorrent (keeping files) and preparing to move.")
+                logger.info(f"{wait_time_minutes}-minute delay completed for {job['name']}. Removing from qBittorrent (keeping files) and preparing to move.")
                 try:
                     # Remove from qBittorrent, keep files
                     client.torrents_delete(delete_files=False, torrent_hashes=info_hash)
