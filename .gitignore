@@ -1,0 +1,14 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+# C extensions
+*.so
+# State files & logs
+*.log
+torrent_sync_state.json
+racing_link_state.json
+tracker_mappings.json
+# Configuration files containing credentials
+config.json
+implementation_plan.md
