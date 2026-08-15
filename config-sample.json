@@ -2,7 +2,10 @@
   "qbittorrent": {
     "url": "http://127.0.0.1:8080/",
     "username": "your_username",
-    "password": "your_password"
+    "password": "your_password",
+    "requests_args": {
+      "auth": ["nginx_user", "nginx_password"]
+    }
   },
   "paths": {
     "watch_dir": "/path/to/watch_dir",
@@ -34,7 +37,10 @@
   "racing_qbittorrent": {
     "url": "http://127.0.0.1:8081/",
     "username": "your_racing_username",
-    "password": "your_racing_password"
+    "password": "your_racing_password",
+    "requests_args": {
+      "auth": ["nginx_user", "nginx_password"]
+    }
   },
   "prowlarr": {
     "url": "http://127.0.0.1:9696/",

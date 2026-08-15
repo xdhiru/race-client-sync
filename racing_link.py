@@ -250,11 +250,18 @@ def download_torrent_bytes(download_url, api_key):
 def get_racing_qb_client(config):
     qb_config = config["racing_qbittorrent"]
     try:
+        requests_args = {'timeout': (15, 45)}
+        if "requests_args" in qb_config:
+            user_args = qb_config["requests_args"]
+            if isinstance(user_args, dict):
+                requests_args.update(user_args)
+                if "auth" in requests_args and isinstance(requests_args["auth"], list):
+                    requests_args["auth"] = tuple(requests_args["auth"])
         client = qbittorrentapi.Client(
             host=qb_config["url"],
             username=qb_config["username"],
             password=qb_config["password"],
-            REQUESTS_ARGS={'timeout': (15, 45)}
+            REQUESTS_ARGS=requests_args
         )
         client.auth_log_in()
         return client
