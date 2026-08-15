@@ -533,6 +533,23 @@ def main():
                 if not matched_result and info_hash in active_searches:
                     logger.info(f"No matching Local upload found yet for: {name}. Retrying next interval.")
                     
+            # Prune stale entries to prevent state file growing indefinitely
+            current_hashes = {t.hash for t in torrents}
+            state_changed = False
+            
+            for h in list(processed_hashes.keys()):
+                if h not in current_hashes:
+                    processed_hashes.pop(h)
+                    state_changed = True
+                    
+            for h in list(active_searches.keys()):
+                if h not in current_hashes:
+                    active_searches.pop(h)
+                    state_changed = True
+                    
+            if state_changed:
+                save_state(state)
+                
         except Exception as e:
             logger.error(f"Unexpected error in racing link loop: {e}", exc_info=True)
             
