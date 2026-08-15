@@ -1,0 +1,111 @@
+﻿# Main qBittorrent client configuration (where FUSE mount is connected)
+[qbittorrent]
+url = "http://127.0.0.1:8080/"
+username = "your_username"
+password = "your_password"
+
+# Optional custom requests connection parameters (e.g. Basic Auth for Nginx proxy)
+[qbittorrent.requests_args]
+auth = ["nginx_user", "nginx_password"]
+
+
+# Directory paths configuration for syncthing, downloads, and mounts
+[paths]
+# Folder monitored by torrent_sync.py for newly matching .torrent files to download
+watch_dir = "/path/to/watch_dir"
+
+# Folder where processed .torrent files are archived
+completed_dir = "/path/to/completed_dir"
+
+# Local fast storage path (e.g., SSD) for initial downloading of active batches
+local_save_path = "/path/to/qbittorrent_local_downloads/"
+
+# Mount path of the rclone FUSE directory where files are seeded remotely
+remote_save_path = "/path/to/rclone_fuse_mount/"
+
+# qBittorrent category assigned to local SSD downloading batches
+category = "SSD"
+
+# qBittorrent category assigned to remote seeding torrents pointing to FUSE path
+remote_category = "remote"
+
+
+# Automated sync daemon performance and limitation boundaries
+[settings]
+# Maximum allowed disk space occupied by local downloads on the SSD (in GB)
+ssd_limit_gb = 35.0
+
+# Time to wait (in minutes) after local download completes before moving via rclone
+wait_time_minutes = 2.0
+
+# Sleep interval duration (seconds) between local loop cycles
+poll_interval_seconds = 10
+
+# Duration to wait (seconds) after rclone move before adding to remote client, verifying mount updates
+fuse_cooldown_seconds = 15
+
+# Maximum number of simultaneous active downloading torrents allowed on SSD
+max_active_downloads = 3
+
+
+# Rclone file migration settings
+[rclone]
+# Name of the rclone remote and destination subpath configured in rclone.conf
+remote = "remote_name:path/"
+
+# Number of concurrent file transfers parameter passed to rclone (--transfers)
+transfers = 2
+
+# Maximum number of parallel rclone move background jobs allowed to run concurrently
+max_parallel_jobs = 2
+
+
+# Optional Telegram bot notifications configuration
+[telegram]
+enabled = false
+bot_token = "YOUR_TELEGRAM_BOT_TOKEN"
+chat_id = "YOUR_TELEGRAM_CHAT_ID"
+
+# Optional separate chat ID for oversized movie warnings (falls back to chat_id if empty)
+oversized_chat_id = "YOUR_OVERSIZED_CHAT_ID"
+
+# Optional separate chat ID for search timeout logs (falls back to chat_id if empty)
+not_found_chat_id = "YOUR_NOT_FOUND_CHAT_ID"
+
+
+# Secondary qBittorrent client configuration (dedicated racing instance)
+[racing_qbittorrent]
+url = "http://127.0.0.1:8081/"
+username = "your_racing_username"
+password = "your_racing_password"
+
+[racing_qbittorrent.requests_args]
+auth = ["nginx_user", "nginx_password"]
+
+
+# Prowlarr API search credentials
+[prowlarr]
+url = "http://127.0.0.1:9696/"
+api_key = "YOUR_PROWLARR_API_KEY"
+indexer_name = "local"
+
+
+# Bridge daemon racing parameters
+[racing_settings]
+# Bridge daemon cycle sleep interval (seconds)
+poll_interval_seconds = 60
+
+# Sub-string filter matching trackers of torrents to race on the racing client
+tracker_filter = "tracker_domain.com"
+
+# Maximum time (hours) to keep searching Prowlarr before timing out/notifying
+max_search_age_hours = 24
+
+# Time (minutes) to wait between Prowlarr searches for a specific pending torrent
+search_interval_minutes = 15
+
+# Minimum spacing delay (seconds) enforced globally between Prowlarr indexer queries
+search_gap_seconds = 180
+
+# Visual tag/category applied on racing client for migrated torrents, marking them safe for deletion
+completed_category = "processed"

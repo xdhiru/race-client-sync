@@ -1,6 +1,8 @@
-# qBittorrent FUSE & Racing Sync Automation
+# qBittorrent Cross-Tracker Seeding & FUSE Migration Suite
 
-A professional, resilient, and fully decoupled Python synchronization suite designed for VPS environments with low CPU/IO budgets. It automates the workflow of downloading torrents, migrating them to rclone remotes, and managing racing client migrations.
+A professional, resilient, and fully decoupled Python automation suite designed to link racing seedboxes and home seeding servers while saving VPS upload bandwidth. 
+
+Instead of transferring files from your racing VPS to your home server (which consumes limited VPS upload bandwidth), this suite uses Prowlarr to match the active release on a second tracker. It then downloads the files directly on the home server, migrates them to rclone FUSE storage, and re-adds both torrents so they seed simultaneously from the exact same FUSE-mounted files.
 
 ## System Overview
 
@@ -15,7 +17,7 @@ The system consists of two completely independent, daemonized Python scripts tha
 2. **`racing_link.py` (Bridge Daemon)**:
    - Polls a secondary qBittorrent instance (racing client) for tracker matches (e.g., `tracker_domain.com`).
    - Gated on **100% download completion** to avoid premature matching.
-   - Queries Prowlarr for matching files and structures on target indexers (e.g., Local) to locate the same torrent content.
+   - Queries Prowlarr for matching files and structures on target indexers to locate the same torrent content.
    - Employs a global query spacing limit to prevent API rate-limiting or hammering indexers.
    - Automatically downloads matching `.torrent` files into the watch folder and registers mappings for migration.
 
@@ -34,64 +36,15 @@ The system consists of two completely independent, daemonized Python scripts tha
 
 ---
 
-## Configuration (`config.json`)
+## Configuration (`sample-config.toml`)
 
-Configure your credentials and folder paths in the `config.json` file:
+To configure the automation suite, copy the template `sample-config.toml` to `config.toml` and fill in your actual credentials and folder paths:
 
-```json
-{
-  "qbittorrent": {
-    "url": "http://127.0.0.1:10889/",
-    "username": "admin",
-    "password": "adminadmin"
-  },
-  "paths": {
-    "watch_dir": "/home/kevin/syncthing/torrentsB",
-    "completed_dir": "/home/kevin/torrents/completed",
-    "local_save_path": "/home/kevin/torrents/qbittorrent/",
-    "remote_save_path": "/mnt/remote_name/qbittorrent/",
-    "category": "SSD",
-    "remote_category": "remote"
-  },
-  "settings": {
-    "ssd_limit_gb": 30.0,
-    "wait_time_minutes": 2,
-    "poll_interval_seconds": 10,
-    "fuse_cooldown_seconds": 15,
-    "max_active_downloads": 3
-  },
-  "rclone": {
-    "remote": "remote_name:qbittorrent/",
-    "transfers": 2,
-    "max_parallel_jobs": 2
-  },
-  "telegram": {
-    "enabled": false,
-    "bot_token": "YOUR_TELEGRAM_BOT_TOKEN",
-    "chat_id": "YOUR_TELEGRAM_CHAT_ID",
-    "oversized_chat_id": "YOUR_OVERSIZED_CHAT_ID",
-    "not_found_chat_id": "YOUR_NOT_FOUND_CHAT_ID"
-  },
-  "racing_qbittorrent": {
-    "url": "http://127.0.0.1:10890/",
-    "username": "admin",
-    "password": "adminadmin"
-  },
-  "prowlarr": {
-    "url": "http://127.0.0.1:9696/",
-    "api_key": "YOUR_PROWLARR_API_KEY",
-    "indexer_name": "local"
-  },
-  "racing_settings": {
-    "poll_interval_seconds": 60,
-    "tracker_filter": "tracker_domain.com",
-    "max_search_age_hours": 24,
-    "search_interval_minutes": 15,
-    "search_gap_seconds": 180,
-    "completed_category": "processed"
-  }
-}
+```bash
+cp sample-config.toml config.toml
 ```
+
+Modify the settings inside `config.toml` (refer to the heavily commented [sample-config.toml](sample-config.toml) file for a complete reference of all settings and defaults).
 
 ### Key Parameters:
 - `settings.ssd_limit_gb`: Keeps total active downloads under this limit (GB) to prevent disk exhaustion.
@@ -104,17 +57,79 @@ Configure your credentials and folder paths in the `config.json` file:
 
 1. **Install Dependencies**:
    ```bash
-   pip install qbittorrent-api
+   pip install -r requirements.txt
    ```
-2. **Launch Sync Loop**:
-   Run in a detached tmux pane:
+
+### Option A: Unified Runner Script (One Command)
+You can run both daemons simultaneously in the foreground using the unified runner script:
+```bash
+python3 run.py
+```
+- **Unified Log Stream**: Logs from both processes will stream to your terminal in real-time.
+- **Graceful Shutdown**: Pressing `Ctrl+C` will automatically send termination signals and cleanly stop both background processes.
+- **Fail-Safe**: If either script crashes, the runner will automatically terminate the other to prevent orphaned states.
+
+### Option B: Detached tmux Panes (Manual Backgrounding)
+If you prefer to run the daemons independently in the background:
+1. **Launch Sync Loop**:
    ```bash
    python3 torrent_sync.py
    ```
-3. **Launch Racing Link Bridge**:
-   Run in another detached tmux pane:
+2. **Launch Racing Link Bridge**:
    ```bash
    python3 racing_link.py
+   ```
+
+### Option C: Systemd Services (Recommended for Production)
+For automatic startup on boot and crash recovery, configure the scripts as systemd units:
+
+1. Create a service file for the main sync loop at `/etc/systemd/system/torrent-sync.service`:
+   ```ini
+   [Unit]
+   Description=qBittorrent FUSE Sync Daemon
+   After=network.target
+
+   [Service]
+   Type=simple
+   User=kevin
+   WorkingDirectory=/home/kevin/scripts/torrents_workflow2
+   ExecStart=/usr/bin/python3 torrent_sync.py
+   Restart=always
+   RestartSec=10
+
+   [Install]
+   WantedBy=multi-user.target
+   ```
+
+2. Create a service file for the racing bridge at `/etc/systemd/system/racing-link.service`:
+   ```ini
+   [Unit]
+   Description=qBittorrent Racing Link Daemon
+   After=network.target
+
+   [Service]
+   Type=simple
+   User=kevin
+   WorkingDirectory=/home/kevin/scripts/torrents_workflow2
+   ExecStart=/usr/bin/python3 racing_link.py
+   Restart=always
+   RestartSec=10
+
+   [Install]
+   WantedBy=multi-user.target
+   ```
+
+3. Reload, enable, and start the daemons:
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable torrent-sync.service racing-link.service
+   sudo systemctl start torrent-sync.service racing-link.service
+   ```
+
+4. Monitor execution and inspect logs:
+   ```bash
+   journalctl -u torrent-sync.service -f
+   journalctl -u racing-link.service -f
    ```
 
 ## License

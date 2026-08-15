@@ -2,6 +2,14 @@ import os
 import sys
 import time
 import json
+try:
+    import tomllib
+except ModuleNotFoundError:
+    try:
+        import tomli as tomllib
+    except ModuleNotFoundError:
+        print("Error: Python 3.11+ is required, or install 'tomli' (pip install tomli).")
+        sys.exit(1)
 import logging
 import re
 import urllib.request
@@ -20,7 +28,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("racing_link")
 
-CONFIG_PATH = "config.json"
+CONFIG_PATH = "config.toml"
 STATE_PATH = "racing_link_state.json"
 MAPPINGS_PATH = "tracker_mappings.json"
 
@@ -28,8 +36,12 @@ def load_config():
     if not os.path.exists(CONFIG_PATH):
         logger.error(f"Configuration file {CONFIG_PATH} not found!")
         sys.exit(1)
-    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(CONFIG_PATH, "rb") as f:
+            return tomllib.load(f)
+    except Exception as e:
+        logger.error(f"Failed to parse configuration file {CONFIG_PATH}: {e}")
+        sys.exit(1)
 
 def load_state():
     if os.path.exists(STATE_PATH):

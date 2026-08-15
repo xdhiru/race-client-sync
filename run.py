@@ -1,0 +1,57 @@
+﻿import subprocess
+import sys
+import time
+import signal
+import os
+
+def main():
+    if not os.path.exists("config.toml"):
+        print("Error: config.toml not found! Please copy sample-config.toml to config.toml and configure it.")
+        sys.exit(1)
+
+    print("Starting qBittorrent FUSE and Racing Sync Automation...")
+
+    # Start both processes (inheriting stdout/stderr so logs stream to the terminal in one place)
+    sync_proc = subprocess.Popen([sys.executable, "torrent_sync.py"])
+    racing_proc = subprocess.Popen([sys.executable, "racing_link.py"])
+
+    print(f"Started torrent_sync.py (PID: {sync_proc.pid})")
+    print(f"Started racing_link.py (PID: {racing_proc.pid})")
+    print("Running... Press [Ctrl+C] to stop both daemons.")
+
+    def signal_handler(sig, frame):
+        print("\nShutting down daemons...")
+        sync_proc.terminate()
+        racing_proc.terminate()
+        # Wait for them to exit
+        sync_proc.wait()
+        racing_proc.wait()
+        print("Stopped all sync automation daemons.")
+        sys.exit(0)
+
+    # Register signals for clean shutdown
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    # Keep running and monitor processes
+    while True:
+        sync_code = sync_proc.poll()
+        racing_code = racing_proc.poll()
+
+        # If either process died, terminate the other and exit
+        if sync_code is not None:
+            print(f"Warning: torrent_sync.py exited unexpectedly with code {sync_code}")
+            racing_proc.terminate()
+            racing_proc.wait()
+            sys.exit(sync_code)
+            
+        if racing_code is not None:
+            print(f"Warning: racing_link.py exited unexpectedly with code {racing_code}")
+            sync_proc.terminate()
+            sync_proc.wait()
+            sys.exit(racing_code)
+
+        time.sleep(1)
+
+if __name__ == "__main__":
+    main()
