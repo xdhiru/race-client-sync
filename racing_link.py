@@ -516,6 +516,11 @@ def main():
                             
                             # Register mapping in main state
                             if matched_local_hash:
+                                if len(matched_local_hash) == 80:
+                                    try:
+                                        matched_local_hash = bytes.fromhex(matched_local_hash).decode('utf-8')
+                                    except Exception:
+                                        pass
                                 register_tracker_mapping(matched_local_hash.lower(), info_hash.lower())
                                 
                             processed_hashes[info_hash] = "processed"

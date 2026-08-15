@@ -401,7 +401,13 @@ def get_tracker_mapping(local_hash):
     try:
         with open(MAPPINGS_PATH, "r", encoding="utf-8") as f:
             mappings = json.load(f)
-        return mappings.get(local_hash)
+        val = mappings.get(local_hash)
+        if val:
+            return val
+        double_hex = local_hash.encode('utf-8').hex()
+        val = mappings.get(double_hex)
+        if val:
+            return val
     except Exception as e:
         logger.error(f"Failed to read mappings file: {e}")
     return None
@@ -412,8 +418,15 @@ def remove_tracker_mapping(local_hash):
     try:
         with open(MAPPINGS_PATH, "r", encoding="utf-8") as f:
             mappings = json.load(f)
+        has_changed = False
         if local_hash in mappings:
             mappings.pop(local_hash)
+            has_changed = True
+        double_hex = local_hash.encode('utf-8').hex()
+        if double_hex in mappings:
+            mappings.pop(double_hex)
+            has_changed = True
+        if has_changed:
             with open(MAPPINGS_PATH, "w", encoding="utf-8") as f:
                 json.dump(mappings, f, indent=2)
     except Exception as e:
@@ -837,6 +850,7 @@ def process_state_machine(config, state, client):
                 racing_hash = get_tracker_mapping(info_hash)
                 migration_ok = True
                 if racing_hash:
+                    job["linked_tracker"] = "Racing"
                     migration_ok = False
                     logger.info(f"Local torrent {info_hash} has mapping to Racing torrent {racing_hash}. Exporting Racing torrent from racing client and adding to normal client pointing to remote FUSE path.")
                     try:
@@ -893,6 +907,89 @@ def process_state_machine(config, state, client):
                     active_jobs.pop(info_hash, None)
                     save_state(state)
 
+def sweep_dangling_mappings(config, client):
+    if not os.path.exists(MAPPINGS_PATH):
+        return
+    try:
+        with open(MAPPINGS_PATH, "r", encoding="utf-8") as f:
+            mappings = json.load(f)
+        if not mappings:
+            return
+    except Exception as e:
+        logger.error(f"Failed to read mappings file for sweep: {e}")
+        return
+
+    # Establish racing client connection once
+    racing_client = None
+    try:
+        racing_client = get_racing_qb_client(config)
+    except Exception as e:
+        logger.error(f"Failed to connect to racing client for sweep: {e}")
+        return
+
+    if not racing_client:
+        return
+
+    # Query normal qBittorrent client once to check if any mapped local torrent is already seeding from FUSE
+    try:
+        normal_torrents = client.torrents_info()
+        normal_torrents_by_hash = {t.hash.lower(): t for t in normal_torrents}
+    except Exception as e:
+        logger.error(f"Failed to fetch normal client torrents for sweep: {e}")
+        return
+
+    for local_hash, racing_hash in list(mappings.items()):
+        local_hash_clean = local_hash.lower()
+        if len(local_hash_clean) == 80:
+            try:
+                local_hash_clean = bytes.fromhex(local_hash_clean).decode('utf-8').lower()
+            except Exception:
+                pass
+
+        t = normal_torrents_by_hash.get(local_hash_clean)
+        if t:
+            is_checking = t.state.lower().startswith("checking") or "checking" in t.state.lower()
+            if t.progress == 1.0 and not is_checking:
+                logger.info(f"Sweep: Found completed Local torrent {local_hash_clean} in normal client with pending Tracker mapping {racing_hash}. Migrating now.")
+                remote_save_path = t.save_path
+                try:
+                    # Export from racing client
+                    racing_torrent_bytes = racing_client.torrents_export(torrent_hash=racing_hash)
+                    
+                    # Add to normal client
+                    try:
+                        client.torrents_add(
+                            torrent_files=racing_torrent_bytes,
+                            save_path=remote_save_path,
+                            category=config["paths"].get("remote_category", "remote"),
+                            is_skip_checking=True
+                        )
+                        logger.info(f"Sweep: Successfully added Racing torrent {racing_hash} to normal client pointing to: {remote_save_path}")
+                        remove_tracker_mapping(local_hash)
+                    except Exception as add_err:
+                        err_msg_lower = str(add_err).lower()
+                        if "torrent hash" in err_msg_lower or "409" in err_msg_lower or "conflict" in err_msg_lower:
+                            logger.info(f"Sweep: Racing torrent {racing_hash} already exists in normal qBittorrent client.")
+                            remove_tracker_mapping(local_hash)
+                        else:
+                            logger.error(f"Sweep: Failed to add Racing torrent to normal client: {add_err}")
+                            continue
+
+                    # Set category on racing client
+                    racing_settings = config.get("racing_settings") or {}
+                    racing_completed_cat = racing_settings.get("completed_category", "processed")
+                    try:
+                        racing_client.torrents_create_category(name=racing_completed_cat)
+                    except Exception:
+                        pass
+                    try:
+                        racing_client.torrents_set_category(category=racing_completed_cat, torrent_hashes=racing_hash)
+                        logger.info(f"Sweep: Assigned completed category '{racing_completed_cat}' to racing torrent {racing_hash}")
+                    except Exception as cat_err:
+                        logger.warning(f"Sweep: Failed to set category for racing torrent {racing_hash}: {cat_err}")
+                except Exception as e:
+                    logger.error(f"Sweep: Error migrating Racing torrent {racing_hash}: {e}")
+
 def main():
     logger.info("Initializing qBittorrent and rclone sync automation...")
     config = load_config()
@@ -942,6 +1039,12 @@ def main():
             
             # 1. Process active jobs state machine
             process_state_machine(config, state, client)
+            
+            # Run background sweep to heal any dangling mappings for already completed torrents
+            try:
+                sweep_dangling_mappings(config, client)
+            except Exception as e:
+                logger.error(f"Error during dangling mappings sweep: {e}")
             
             # 2. Check occupied space and see if we can schedule new torrents
             occupied_space = get_current_occupied_space(state["active_jobs"])
