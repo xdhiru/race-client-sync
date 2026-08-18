@@ -961,7 +961,18 @@ def sweep_dangling_mappings(config, client):
         t = normal_torrents_by_hash.get(local_hash_clean)
         if t:
             is_checking = t.state.lower().startswith("checking") or "checking" in t.state.lower()
-            if t.progress == 1.0 and not is_checking:
+            
+            # Ensure the torrent is seeding from the FUSE mount path, not the local SSD!
+            remote_save_path = config["paths"]["remote_save_path"]
+            t_save_path_normalized = os.path.normpath(t.save_path).lower()
+            remote_save_path_normalized = os.path.normpath(remote_save_path).lower()
+            
+            is_on_fuse = (
+                t_save_path_normalized == remote_save_path_normalized or
+                t_save_path_normalized.startswith(remote_save_path_normalized + os.sep)
+            )
+            
+            if t.progress == 1.0 and not is_checking and is_on_fuse:
                 logger.info(f"Sweep: Found completed Local torrent {local_hash_clean} in normal client with pending Tracker mapping {racing_hash}. Migrating now.")
                 remote_save_path = t.save_path
                 try:
