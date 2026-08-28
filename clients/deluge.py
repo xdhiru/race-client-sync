@@ -2,7 +2,6 @@ import json
 import logging
 import urllib.request
 import urllib.parse
-import os
 from .base import BaseTorrentClient
 
 logger = logging.getLogger(__name__)

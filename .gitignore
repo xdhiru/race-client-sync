@@ -6,9 +6,9 @@ __pycache__/
 *.so
 # State files & logs
 *.log
-torrent_sync_state.json
-racing_link_state.json
-tracker_mappings.json
+data/
+
+
 # Configuration files containing credentials
 config.json
 config.toml

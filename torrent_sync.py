@@ -7,17 +7,14 @@ import shutil
 import logging
 import subprocess
 import threading
-import hashlib
 import re
-import urllib.request
-import urllib.parse
 
 import clients
 from utils.config import load_config
-from utils.state import load_json_state, save_json_state, get_tracker_mapping, remove_tracker_mapping
-from utils.torrent import get_torrent_details, get_tracker_domain, get_torrent_file_structure, bdecode, bencode
+from utils.state import load_json_state, save_json_state, get_tracker_mapping, remove_tracker_mapping, MAPPINGS_PATH
+from utils.torrent import get_torrent_details
 from services.prowlarr import get_prowlarr_indexer_id, search_prowlarr, download_torrent_bytes
-from services.telegram import update_telegram_status, send_telegram_notification, format_size
+from services.telegram import update_telegram_status
 
 # Configure Logging
 logging.basicConfig(
@@ -30,7 +27,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 CONFIG_PATH = "config.toml"
-STATE_PATH = "torrent_sync_state.json"
+STATE_PATH = "data/torrent_sync_state.json"
 
 def load_state():
     state = load_json_state(STATE_PATH)
@@ -123,7 +120,7 @@ def escape_rclone_glob(path):
 def get_physical_free_space(path):
     try:
         os.makedirs(path, exist_ok=True)
-        total, used, free = shutil.disk_usage(path)
+        _, _, free = shutil.disk_usage(path)
         return free
     except Exception as e:
         logger.error(f"Failed to check disk usage for path {path}: {e}")
@@ -694,6 +691,9 @@ def main():
             active_paths = {job["torrent_file"] for job in state["active_jobs"].values()}
             candidate_files = [f for f in torrent_files if f not in active_paths]
             
+            if candidate_files:
+                logger.info(f"Found {len(candidate_files)} new candidate torrent(s) in watch directory.")
+                
             for torrent_file in candidate_files:
                 try:
                     details = get_torrent_details(torrent_file)
@@ -817,7 +817,7 @@ def main():
                         continue
                 
                 if active_downloads >= max_active_downloads:
-                    logger.debug(f"Reached max concurrent downloads limit ({active_downloads}/{max_active_downloads}). Waiting to schedule {details['name']}.")
+                    logger.info(f"Reached max concurrent downloads limit ({active_downloads}/{max_active_downloads}). Waiting to schedule {details['name']}.")
                     break
                     
                 first_batch_size = batches[0]["size"]
@@ -883,7 +883,7 @@ def main():
                     except Exception as e:
                         logger.error(f"Failed to add torrent {torrent_file} to client: {e}")
                 else:
-                    logger.debug(f"Torrent {details['name']} (First Batch: {first_batch_size / (1024**3):.2f} GB) does not fit in remaining SSD space (Free: {(ssd_limit - occupied_space) / (1024**3):.2f} GB). Waiting.")
+                    logger.info(f"Torrent {details['name']} (First Batch: {first_batch_size / (1024**3):.2f} GB) does not fit in remaining SSD space (Free: {(ssd_limit - occupied_space) / (1024**3):.2f} GB). Waiting.")
                     break
                     
         except Exception as e:

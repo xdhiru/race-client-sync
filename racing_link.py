@@ -3,8 +3,6 @@ import sys
 import time
 import logging
 import re
-import urllib.request
-import urllib.parse
 import hashlib
 
 import clients
@@ -24,7 +22,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-STATE_PATH = "racing_link_state.json"
+STATE_PATH = "data/racing_link_state.json"
 
 def load_state():
     return load_json_state(STATE_PATH)
@@ -194,7 +192,7 @@ def main():
                     send_telegram_notification(
                         config, 
                         "not_found_chat_id", 
-                        f"⚠️ <b>[RACING_TIMEOUT]</b> Raced torrent not found on Local within limit:<br>Name: <code>{name}</code><br>Age: {age_hours:.1f} hours"
+                        f"⚠️ <b>[RACING_TIMEOUT]</b> Raced torrent not found on Local within limit:\nName: <code>{name}</code>\nAge: {age_hours:.1f} hours"
                     )
                     processed_hashes[info_hash] = "timed_out"
                     active_searches.pop(info_hash, None)
@@ -265,7 +263,7 @@ def main():
                             send_telegram_notification(
                                 config,
                                 "oversized_chat_id",
-                                f"🚨 <b>[OVERSIZED_MOVIE]</b> Raced movie exceeds SSD limit and cannot be batched:<br>Name: <code>{name}</code><br>Size: {format_size(struct['total_size'])}<br>SSD Limit: {format_size(ssd_limit)}"
+                                f"🚨 <b>[OVERSIZED_MOVIE]</b> Raced movie exceeds SSD limit and cannot be batched:\nName: <code>{name}</code>\nSize: {format_size(struct['total_size'])}\nSSD Limit: {format_size(ssd_limit)}"
                             )
                             processed_hashes[info_hash] = "oversized_movie"
                             active_searches.pop(info_hash, None)
@@ -281,11 +279,11 @@ def main():
                             
                             register_tracker_mapping(matched_local_hash.lower(), info_hash)
                             
-                            send_telegram_notification(
-                                config,
-                                "chat_id",
-                                f"🔗 <b>[LINKED]</b> Local search matched racing release:<br>Name: <code>{name}</code><br>Size: {format_size(struct['total_size'])}"
-                            )
+                            # send_telegram_notification(
+                            #     config,
+                            #     "chat_id",
+                            #     f"🔗 <b>[LINKED]</b> Local search matched racing release:\nName: <code>{name}</code>\nSize: {format_size(struct['total_size'])}"
+                            # )
                             
                             processed_hashes[info_hash] = "completed"
                             active_searches.pop(info_hash, None)

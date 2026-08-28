@@ -4,7 +4,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-MAPPINGS_PATH = "tracker_mappings.json"
+MAPPINGS_PATH = "data/tracker_mappings.json"
 
 def load_json_state(path, default_factory=dict):
     if os.path.exists(path):
@@ -17,6 +17,8 @@ def load_json_state(path, default_factory=dict):
 
 def save_json_state(path, state):
     try:
+        d = os.path.dirname(path)
+        if d: os.makedirs(d, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2)
     except Exception as e:
@@ -54,6 +56,8 @@ def remove_tracker_mapping(local_hash):
             mappings.pop(double_hex)
             has_changed = True
         if has_changed:
+            d = os.path.dirname(MAPPINGS_PATH)
+            if d: os.makedirs(d, exist_ok=True)
             with open(MAPPINGS_PATH, "w", encoding="utf-8") as f:
                 json.dump(mappings, f, indent=2)
             logger.info(f"Removed mapping for local hash {local_hash}")
@@ -72,6 +76,8 @@ def register_tracker_mapping(local_hash, racing_hash):
     mappings[local_hash] = racing_hash
     
     try:
+        d = os.path.dirname(MAPPINGS_PATH)
+        if d: os.makedirs(d, exist_ok=True)
         with open(MAPPINGS_PATH, "w", encoding="utf-8") as f:
             json.dump(mappings, f, indent=2)
         logger.info(f"Registered mapping: Local {local_hash} -> Racing {racing_hash}")

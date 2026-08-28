@@ -1,4 +1,3 @@
-import os
 import hashlib
 import urllib.parse
 
@@ -115,7 +114,7 @@ def get_torrent_file_structure(torrent_bytes):
             "file_sizes": sorted(file_sizes),
             "is_single_file": b'files' not in info
         }
-    except Exception as e:
+    except Exception:
         return None
 
 def get_torrent_details(torrent_path):

@@ -2,7 +2,6 @@ import json
 import logging
 import urllib.request
 import urllib.parse
-import re
 
 logger = logging.getLogger(__name__)
 

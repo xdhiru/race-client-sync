@@ -79,7 +79,7 @@ class QBittorrentClient(BaseTorrentClient):
             return []
         try:
             files = self.client.torrents_files(torrent_hash=torrent_hash)
-            return [{"id": f["id"], "name": f["name"], "size": f["size"], "progress": f.get("progress", 0.0)} for f in files]
+            return [{"id": f.get("index", f.get("id", 0)), "name": f["name"], "size": f["size"], "progress": f.get("progress", 0.0)} for f in files]
         except Exception as e:
             logger.error(f"Failed to fetch file list for torrent {torrent_hash} from qBittorrent: {e}")
             return []

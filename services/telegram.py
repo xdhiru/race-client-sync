@@ -55,7 +55,10 @@ def build_telegram_message_text(job, info_hash):
     name = job["name"]
     size = job["size"]
     size_formatted = format_size(size)
+    
     tracker = job.get("tracker", "Unknown")
+    tracker = tracker.replace("https://", "").replace("http://", "").split("/")[0]
+    
     state = job["state"]
     
     batch_suffix = ""
@@ -65,81 +68,49 @@ def build_telegram_message_text(job, info_hash):
         batch_suffix = f" [{curr}/{total}]"
         
     if state == "rclone_failed":
-        status_header = "🔴 <b>[SYNC_FAILED]</b>"
+        status_header = "❌ <b>[SYNC_FAILED]</b>"
     elif state == "completed":
-        status_header = "🟢 <b>[SYNC_COMPLETED]</b>"
+        status_header = "✅ <b>[SYNC_COMPLETED]</b>"
     else:
-        status_header = f"🟡 <b>[SYNC_IN_PROGRESS]{batch_suffix}</b>"
+        status_header = f"🔄 <b>[SYNC_IN_PROGRESS]{batch_suffix}</b>"
         
-    local_dl = "⚪ DL"
-    cooldown = "⚪ Cooldown"
-    rclone_move = "⚪ Move"
-    re_add = "⚪ Seed"
+    text = f"{status_header}\n<code>{name}</code> ({size_formatted})"
     
-    if state == "added_local":
-        local_dl = "🟡 DL"
-    elif state == "waiting_5min":
-        local_dl = "🟢 DL"
-        cooldown = "🟡 Cooldown"
-    elif state == "rclone_moving":
-        local_dl = "🟢 DL"
-        cooldown = "🟢 Cooldown"
-        rclone_move = "🟡 Move"
-    elif state == "rclone_failed":
-        local_dl = "🟢 DL"
-        cooldown = "🟢 Cooldown"
-        rclone_move = "🔴 Move"
-    elif state == "fuse_wait":
-        local_dl = "🟢 DL"
-        cooldown = "🟢 Cooldown"
-        rclone_move = "🟢 Move"
-        re_add = "🟡 Seed"
-    elif state == "added_remote":
-        local_dl = "🟢 DL"
-        cooldown = "🟢 Cooldown"
-        rclone_move = "🟢 Move"
-        re_add = "🟡 Seed"
-    elif state == "completed":
-        local_dl = "🟢 DL"
-        cooldown = "🟢 Cooldown"
-        rclone_move = "🟢 Move"
-        re_add = "🟢 Seed"
-        
-    text = (
-        f"{status_header} {name} ({size_formatted})\n"
-        f"Hash: <code>{info_hash}</code> | Tracker: {tracker}\n"
-        f"Steps: {local_dl} ➔ {cooldown} ➔ {rclone_move} ➔ {re_add}"
-    )
-    
-    added_time_str = format_time(job.get("added_time"))
-    completion_time_str = format_time(job.get("completion_time"))
-    
-    times_parts = [f"DL ({added_time_str} ➔ {completion_time_str})"]
-    
-    move_start = job.get("move_start_time")
-    move_end = job.get("move_completed_time")
-    if move_start or move_end:
-        move_start_str = format_time(move_start)
-        if state == "rclone_failed":
-            move_end_str = "Failed"
+    if state == "completed":
+        added_time = job.get("added_time")
+        completed_time = job.get("seeding_completed_time")
+        if added_time and completed_time:
+            duration = int(completed_time - added_time)
+            m, s = divmod(duration, 60)
+            h, m = divmod(m, 60)
+            if h > 0:
+                duration_str = f"{h}h {m}m"
+            else:
+                duration_str = f"{m}m {s}s"
+            text += f"\nTracker: {tracker} | Time: {duration_str}"
         else:
-            move_end_str = format_time(move_end)
-        times_parts.append(f"Move ({move_start_str} ➔ {move_end_str})")
-        
-    readd_start = job.get("readd_start_time")
-    seeding_completed = job.get("seeding_completed_time")
-    if readd_start or seeding_completed:
-        readd_start_str = format_time(readd_start)
-        seeding_completed_str = format_time(seeding_completed)
-        times_parts.append(f"Seed ({readd_start_str} ➔ {seeding_completed_str})")
-        
-    times_line = " | ".join(times_parts)
-    text += f"\nTimes: {times_line}"
-    
-    error_msg = job.get("error_msg")
-    if error_msg:
-        escaped_error = error_msg.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-        text += f"\nError: <pre>{escaped_error}</pre>"
+            text += f"\nTracker: {tracker}"
+    elif state == "rclone_failed":
+        text += f"\nTracker: {tracker}"
+        error_msg = job.get("error_msg")
+        if error_msg:
+            escaped_error = error_msg.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            text += f"\nError: <pre>{escaped_error}</pre>"
+    else:
+        if state == "added_local":
+            step = "Downloading..."
+        elif state == "waiting_5min":
+            step = "Cooldown..."
+        elif state == "rclone_moving":
+            step = "Moving to Remote..."
+        elif state == "fuse_wait":
+            step = "Waiting for Mount..."
+        elif state == "added_remote":
+            step = "Seeding on Remote..."
+        else:
+            step = state
+            
+        text += f"\nStatus: {step}"
         
     return text
 
