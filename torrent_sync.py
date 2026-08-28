@@ -33,7 +33,9 @@ CONFIG_PATH = "config.toml"
 STATE_PATH = "torrent_sync_state.json"
 
 def load_state():
-    return load_json_state(STATE_PATH)
+    state = load_json_state(STATE_PATH)
+    state.setdefault("active_jobs", {})
+    return state
 
 def save_state(state):
     save_json_state(STATE_PATH, state)

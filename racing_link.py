@@ -128,6 +128,8 @@ def main():
                 
             try:
                 torrents = client.get_torrents_info()
+                # Sort torrents by added time (oldest first) to ensure FIFO priority
+                torrents = sorted(torrents, key=lambda x: x.get("added_on", 0))
             except Exception as e:
                 logger.error(f"Failed to fetch torrent list from racing client: {e}")
                 time.sleep(poll_interval)

@@ -1,6 +1,18 @@
 import os
 import sys
 import logging
+import socket
+
+# Force IPv4 DNS resolution globally to bypass broken IPv6 routing on host
+orig_getaddrinfo = socket.getaddrinfo
+def forced_getaddrinfo(*args, **kwargs):
+    lst = list(args)
+    if len(lst) > 2:
+        lst[2] = socket.AF_INET
+    else:
+        kwargs['family'] = socket.AF_INET
+    return orig_getaddrinfo(*lst, **kwargs)
+socket.getaddrinfo = forced_getaddrinfo
 
 try:
     import tomllib
