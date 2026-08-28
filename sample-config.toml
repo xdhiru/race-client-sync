@@ -73,21 +73,36 @@ oversized_chat_id = "YOUR_OVERSIZED_CHAT_ID"
 not_found_chat_id = "YOUR_NOT_FOUND_CHAT_ID"
 
 
-# Secondary qBittorrent client configuration (dedicated racing instance)
-[racing_qbittorrent]
-url = "http://127.0.0.1:8081/"
-username = "your_racing_username"
-password = "your_racing_password"
+# Secondary client configuration (dedicated racing instance, e.g. qBittorrent or Deluge)
+[racing_client]
+# Set "type" to "qbittorrent" or "deluge" (defaults to "qbittorrent" if omitted)
+type = "deluge"
 
-[racing_qbittorrent.requests_args]
-auth = ["nginx_user", "nginx_password"]
+# --- Deluge WebUI configuration ---
+url = "http://127.0.0.1:8112/"
+password = "your_deluge_webui_password"
+
+# Optional: Nginx Basic Auth credentials (supported by both Deluge and qBittorrent wrappers)
+# [racing_client.requests_args]
+# auth = ["nginx_user", "nginx_password"]
+
+# --- OR qBittorrent WebUI configuration (uncomment if using qBittorrent instead) ---
+# type = "qbittorrent"
+# url = "http://127.0.0.1:8081/"
+# username = "your_racing_username"
+# password = "your_racing_password" 
 
 
 # Prowlarr API search credentials
 [prowlarr]
 url = "http://127.0.0.1:9696/"
 api_key = "YOUR_PROWLARR_API_KEY"
+
+# The name of the local/long-term tracker indexer in Prowlarr (where home server downloads the matched torrent)
 indexer_name = "local"
+
+# Optional: The name of the racing tracker indexer in Prowlarr (used as a fallback to download the racing .torrent file for remote migration if the racing client doesn't support direct file exporting, e.g. Deluge)
+# racing_indexer_name = "racing"
 
 
 # Bridge daemon racing parameters
