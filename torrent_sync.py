@@ -14,7 +14,26 @@ from utils.config import load_config
 from utils.state import load_json_state, save_json_state, get_tracker_mapping, remove_tracker_mapping, MAPPINGS_PATH
 from utils.torrent import get_torrent_details
 from services.prowlarr import get_prowlarr_indexer_id, search_prowlarr, download_torrent_bytes
-from services.telegram import update_telegram_status
+from services.telegram import update_telegram_status, send_already_seeding_notification, start_telegram_listener
+
+def normalize_info_hash(h):
+    if not h:
+        return ""
+    h = h.strip().lower()
+    if len(h) == 80:
+        try:
+            h = bytes.fromhex(h).decode('utf-8').lower()
+        except Exception:
+            pass
+    return h
+
+def clean_search_query(name):
+    for ext in ['.mkv', '.mp4', '.avi', '.ts', '.mp3', '.flac']:
+        if name.lower().endswith(ext):
+            name = name[:-len(ext)]
+            break
+    cleaned = re.sub(r'[\s._-]', ' ', name)
+    return ' '.join(cleaned.split())
 
 # Configure Logging
 logging.basicConfig(
@@ -189,39 +208,53 @@ def process_state_machine(config, state, client):
                 except Exception as e:
                     logger.warning(f"Failed to configure batch priorities for {job['name']} in state machine: {e}. Will retry.")
                     
-            if "batches" in job and "current_batch_index" in job:
+            is_complete = False
+            total_batches = len(job.get("batches", []))
+            t_progress = t.get("progress", 0.0) if t else 0.0
+            t_state = t.get("state", "") if t else ""
+            is_qb_seeding = t_progress >= 1.0 or t_state.endswith("up") or "upload" in t_state or "stalled" in t_state and t_progress >= 0.999
+
+            # If the torrent is a single batch and qBittorrent reports completion, complete immediately
+            if total_batches <= 1 and is_qb_seeding:
+                is_complete = True
+            elif "batches" in job and "current_batch_index" in job:
                 try:
                     files = client.get_torrent_files(info_hash)
                     if files:
                         curr_idx = job["current_batch_index"]
                         batch_ids = set(job["batches"][curr_idx]["file_ids"])
                         
-                        batch_completed_size = 0
+                        batch_completed_size = 0.0
                         for f in files:
-                            if f["id"] in batch_ids:
-                                f_progress = f.get("progress", 1.0)
-                                batch_completed_size += int(f["size"] * f_progress)
+                            if f.get("id") in batch_ids:
+                                f_prog = f.get("progress", 0.0)
+                                batch_completed_size += (f.get("size", 0) * f_prog)
                                 
                         batch_total_size = job["batches"][curr_idx]["size"]
-                        batch_progress = batch_completed_size / batch_total_size if batch_total_size > 0 else 1.0
+                        batch_progress = (batch_completed_size / batch_total_size) if batch_total_size > 0 else 1.0
                         
-                        if batch_progress >= 1.0:
-                            logger.info(f"Batch {curr_idx + 1} completed downloading for {job['name']}. Starting cooldown.")
-                            job["state"] = "waiting_5min"
-                            job["completion_time"] = time.time()
-                            update_telegram_status(config, job, info_hash)
-                            save_state(state)
+                        if batch_progress >= 0.999 or is_qb_seeding:
+                            is_complete = True
+                    elif is_qb_seeding:
+                        is_complete = True
                     else:
                         logger.warning(f"No files returned by client for torrent {job['name']}. Waiting.")
                 except Exception as e:
                     logger.warning(f"Failed to check batch progress for {job['name']}: {e}")
+                    if is_qb_seeding:
+                        is_complete = True
             else:
-                if t["progress"] >= 1.0:
-                    logger.info(f"Torrent completed downloading locally: {job['name']}. Starting cooldown.")
-                    job["state"] = "waiting_5min"
-                    job["completion_time"] = time.time()
-                    update_telegram_status(config, job, info_hash)
-                    save_state(state)
+                if is_qb_seeding:
+                    is_complete = True
+
+            if is_complete:
+                curr_batch = job.get("current_batch_index", 0) + 1
+                batch_str = f"Batch {curr_batch}/{total_batches}" if total_batches > 1 else "Torrent"
+                logger.info(f"{batch_str} completed downloading for {job['name']}. Starting cooldown ({wait_time_minutes:.1f} min).")
+                job["state"] = "waiting_5min"
+                job["completion_time"] = time.time()
+                update_telegram_status(config, job, info_hash)
+                save_state(state)
 
         # --- STATE: waiting_5min ---
         elif current_state == "waiting_5min":
@@ -450,11 +483,23 @@ def process_state_machine(config, state, client):
                                     try:
                                         racing_indexer_id = get_prowlarr_indexer_id(prowlarr_url, prowlarr_api_key, racing_indexer_name)
                                         if racing_indexer_id:
-                                            sanitized_query = re.sub(r'[\s._-]', ' ', job["name"])
+                                            query_name = job["name"]
+                                            try:
+                                                racing_torrents = racing_client.get_torrents_info()
+                                                racing_t_by_hash = {rt["hash"].lower(): rt for rt in racing_torrents}
+                                                norm_racing_hash = normalize_info_hash(racing_hash)
+                                                if norm_racing_hash in racing_t_by_hash:
+                                                    query_name = racing_t_by_hash[norm_racing_hash]["name"]
+                                                    logger.info(f"Using actual racing torrent name for Prowlarr query: '{query_name}'")
+                                            except Exception as name_err:
+                                                logger.warning(f"Could not retrieve racing torrent name from Deluge: {name_err}. Falling back to local name.")
+                                                
+                                            sanitized_query = clean_search_query(query_name)
                                             search_results = search_prowlarr(prowlarr_url, prowlarr_api_key, racing_indexer_id, sanitized_query)
+                                            norm_target_hash = normalize_info_hash(racing_hash)
                                             for res in search_results:
-                                                res_hash = res.get("infoHash", "").lower()
-                                                if res_hash == racing_hash.lower():
+                                                res_hash = normalize_info_hash(res.get("infoHash", ""))
+                                                if res_hash == norm_target_hash:
                                                     download_url = res.get("downloadUrl")
                                                     if download_url:
                                                         logger.info(f"Found matching racing torrent on Prowlarr. Downloading: {res.get('title')}")
@@ -577,11 +622,23 @@ def sweep_dangling_mappings(config, client):
                         try:
                             racing_indexer_id = get_prowlarr_indexer_id(prowlarr_url, prowlarr_api_key, racing_indexer_name)
                             if racing_indexer_id:
-                                sanitized_query = re.sub(r'[\s._-]', ' ', t["name"])
+                                query_name = t["name"]
+                                try:
+                                    racing_torrents = racing_client.get_torrents_info()
+                                    racing_t_by_hash = {rt["hash"].lower(): rt for rt in racing_torrents}
+                                    norm_racing_hash = normalize_info_hash(racing_hash)
+                                    if norm_racing_hash in racing_t_by_hash:
+                                        query_name = racing_t_by_hash[norm_racing_hash]["name"]
+                                        logger.info(f"Sweep: Using actual racing torrent name for Prowlarr query: '{query_name}'")
+                                except Exception as name_err:
+                                    logger.warning(f"Sweep: Could not retrieve racing torrent name from Deluge: {name_err}. Falling back to local name.")
+                                    
+                                sanitized_query = clean_search_query(query_name)
                                 search_results = search_prowlarr(prowlarr_url, prowlarr_api_key, racing_indexer_id, sanitized_query)
+                                norm_target_hash = normalize_info_hash(racing_hash)
                                 for res in search_results:
-                                    res_hash = res.get("infoHash", "").lower()
-                                    if res_hash == racing_hash.lower():
+                                    res_hash = normalize_info_hash(res.get("infoHash", ""))
+                                    if res_hash == norm_target_hash:
                                         download_url = res.get("downloadUrl")
                                         if download_url:
                                             logger.info(f"Sweep: Found matching racing torrent on Prowlarr. Downloading: {res.get('title')}")
@@ -632,6 +689,7 @@ def sweep_dangling_mappings(config, client):
 def main():
     logger.info("Starting sync loop daemon...")
     config = load_config()
+    start_telegram_listener(load_config)
     state = load_state()
     
     if "qbittorrent" not in config:
@@ -742,7 +800,12 @@ def main():
                 exists_in_qb = False
                 existing_torrent_info = None
                 try:
-                    res = [t for t in client.get_torrents_info() if t["hash"] == info_hash]
+                    all_qb_torrents = client.get_torrents_info()
+                    res = [t for t in all_qb_torrents if t["hash"] == info_hash]
+                    if not res:
+                        # Fallback: check if torrent with matching name is already seeding on remote save path
+                        remote_save_path_cfg = config["paths"]["remote_save_path"]
+                        res = [t for t in all_qb_torrents if t["name"] == details["name"] and is_same_or_parent_path(remote_save_path_cfg, t.get("save_path", ""))]
                     if res:
                         exists_in_qb = True
                         existing_torrent_info = res[0]
@@ -769,6 +832,20 @@ def main():
                             logger.info(f"Torrent {details['name']} is already seeding from remote path ({save_path}). Archived .torrent to {dest_file}.")
                         except Exception as e:
                             logger.error(f"Failed to archive completed torrent {torrent_file}: {e}")
+                            
+                        # Lookup racing hash from tracker mappings
+                        racing_hash = get_tracker_mapping(info_hash)
+                        if not racing_hash:
+                            stem = os.path.splitext(os.path.basename(torrent_file))[0]
+                            racing_hash = get_tracker_mapping(stem)
+                            
+                        send_already_seeding_notification(
+                            config,
+                            name=details["name"],
+                            size=details["size"],
+                            tracker=details.get("tracker", "Unknown"),
+                            racing_hash=racing_hash
+                        )
                         continue
                         
                     logger.info(f"Torrent {details['name']} already exists locally in client. Re-associating with state tracking.")
