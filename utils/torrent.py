@@ -101,6 +101,18 @@ def get_torrent_file_structure(torrent_bytes):
         
         if b'files' in info:
             for f in info[b'files']:
+                # Filter out Bittorrent padding files (which Deluge filters out internally)
+                is_pad = False
+                if b'path' in f:
+                    path_components = [p.decode('utf-8', errors='ignore').lower() for p in f[b'path']]
+                    if '.pad' in path_components or any(p.startswith('.pad') for p in path_components) or '_____padding_file' in ''.join(path_components):
+                        is_pad = True
+                if f.get(b'padding') or f.get(b'attr') == b'p':
+                    is_pad = True
+                    
+                if is_pad:
+                    continue
+                    
                 length = f[b'length']
                 total_size += length
                 file_sizes.append(length)

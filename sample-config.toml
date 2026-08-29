@@ -50,6 +50,19 @@ fuse_cooldown_seconds = 15
 # Maximum number of simultaneous active downloading torrents allowed on SSD
 max_active_downloads = 3
 
+# --- LOGGING SETTINGS ---
+# log_level: Logging level for the log files ("DEBUG", "INFO", "WARNING", "ERROR").
+# DEBUG writes all API calls and raw responses to files, which is extremely helpful for debugging.
+log_level = "DEBUG"
+
+# console_log_level: Logging level for the console / CLI output ("INFO", "WARNING", "ERROR").
+# Set this to "WARNING" or "ERROR" to keep the CLI output clean and uncluttered.
+console_log_level = "INFO"
+
+# Filenames for the output log files (will be written to current working directory)
+torrent_sync_log_file = "data/torrent_sync.log"
+racing_link_log_file = "data/racing_link.log"
+
 
 # Rclone file migration settings
 [rclone]

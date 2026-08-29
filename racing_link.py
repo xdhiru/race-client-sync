@@ -32,6 +32,44 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def setup_logging(config):
+    settings = config.get("settings", {})
+    file_level_str = settings.get("log_level", "DEBUG").upper()
+    console_level_str = settings.get("console_log_level", "INFO").upper()
+
+    level_map = {
+        "DEBUG": logging.DEBUG,
+        "INFO": logging.INFO,
+        "WARNING": logging.WARNING,
+        "ERROR": logging.ERROR,
+        "CRITICAL": logging.CRITICAL
+    }
+    file_level = level_map.get(file_level_str, logging.DEBUG)
+    console_level = level_map.get(console_level_str, logging.INFO)
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)  # Capture all logs at root
+
+    # Remove all existing handlers
+    for handler in list(root_logger.handlers):
+        root_logger.removeHandler(handler)
+
+    # File Handler
+    log_file = settings.get("racing_link_log_file", "data/racing_link.log")
+    try:
+        fh = logging.FileHandler(log_file, encoding='utf-8')
+        fh.setLevel(file_level)
+        fh.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] (%(filename)s:%(lineno)d) %(message)s'))
+        root_logger.addHandler(fh)
+    except Exception as e:
+        sys.stderr.write(f"Failed to initialize file logging: {e}\n")
+
+    # Console Handler
+    ch = logging.StreamHandler(sys.stdout)
+    ch.setLevel(console_level)
+    ch.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
+    root_logger.addHandler(ch)
+
 STATE_PATH = "data/racing_link_state.json"
 
 def load_state():
@@ -51,8 +89,9 @@ def get_racing_client(config):
         return None
 
 def main():
-    logger.info("Initializing racing instance bridge...")
     config = load_config()
+    setup_logging(config)
+    logger.info("Initializing racing instance bridge...")
     state = load_state()
     
     if "racing_client" not in config or "prowlarr" not in config:

@@ -78,16 +78,26 @@ def send_already_seeding_notification(config, name, size, tracker, racing_hash=N
     }
     
     if racing_hash:
-        payload["reply_markup"] = {
-            "inline_keyboard": [
-                [
-                    {
-                        "text": "🗑️ Delete from Race Client",
-                        "callback_data": f"del_race:{racing_hash}"
-                    }
-                ]
-            ]
-        }
+        if isinstance(racing_hash, str):
+            racing_hashes = [racing_hash]
+        elif isinstance(racing_hash, list):
+            racing_hashes = racing_hash
+        else:
+            racing_hashes = []
+            
+        buttons = []
+        for rh in racing_hashes:
+            buttons.append([
+                {
+                    "text": f"Delete {rh[:8]} from Race Client",
+                    "callback_data": f"del_race:{rh}"
+                }
+            ])
+            
+        if buttons:
+            payload["reply_markup"] = {
+                "inline_keyboard": buttons
+            }
         
     call_telegram_api("sendMessage", payload, bot_token)
 

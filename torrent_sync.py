@@ -13,7 +13,8 @@ import re
 import clients
 from utils.config import load_config
 from utils.state import load_json_state, save_json_state, get_tracker_mapping, remove_tracker_mapping, MAPPINGS_PATH
-from utils.torrent import get_torrent_details
+import hashlib
+from utils.torrent import get_torrent_details, bdecode, bencode
 from services.prowlarr import get_prowlarr_indexer_id, search_prowlarr, download_torrent_bytes
 from services.telegram import update_telegram_status, send_already_seeding_notification, start_telegram_listener
 
@@ -79,6 +80,45 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+def setup_logging(config):
+    settings = config.get("settings", {})
+    file_level_str = settings.get("log_level", "DEBUG").upper()
+    console_level_str = settings.get("console_log_level", "INFO").upper()
+
+    level_map = {
+        "DEBUG": logging.DEBUG,
+        "INFO": logging.INFO,
+        "WARNING": logging.WARNING,
+        "ERROR": logging.ERROR,
+        "CRITICAL": logging.CRITICAL
+    }
+    file_level = level_map.get(file_level_str, logging.DEBUG)
+    console_level = level_map.get(console_level_str, logging.INFO)
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)  # Capture all logs at root
+
+    # Remove all existing handlers
+    for handler in list(root_logger.handlers):
+        root_logger.removeHandler(handler)
+
+    # File Handler
+    log_file = settings.get("torrent_sync_log_file", "data/torrent_sync.log")
+    try:
+        # Resolve log file relative to config.toml or current directory
+        fh = logging.FileHandler(log_file, encoding='utf-8')
+        fh.setLevel(file_level)
+        fh.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] (%(filename)s:%(lineno)d) %(message)s'))
+        root_logger.addHandler(fh)
+    except Exception as e:
+        sys.stderr.write(f"Failed to initialize file logging: {e}\n")
+
+    # Console Handler
+    ch = logging.StreamHandler(sys.stdout)
+    ch.setLevel(console_level)
+    ch.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
+    root_logger.addHandler(ch)
 
 CONFIG_PATH = "config.toml"
 STATE_PATH = "data/torrent_sync_state.json"
@@ -487,6 +527,19 @@ def process_state_machine(config, state, client):
         elif current_state == "added_remote":
             t = torrents_by_hash.get(info_hash)
             if not t:
+                # If the torrent is missing from normal client, try to re-add it (self-healing)
+                elapsed_since_readd = time.time() - job.get("readd_start_time", 0)
+                if elapsed_since_readd > 30:
+                    logger.warning(f"Torrent {job['name']} missing from client in added_remote state. Retrying add.")
+                    remote_target, remote_save_path = get_job_remote_paths(config, job["name"])
+                    client.add_torrent(
+                        torrent_bytes=job["torrent_file"],
+                        save_path=remote_save_path,
+                        category=config["paths"].get("remote_category", "remote"),
+                        is_skip_checking=True
+                    )
+                    job["readd_start_time"] = time.time()
+                    save_state(state)
                 continue
                 
             is_checking = t["state"].startswith("checking") or "checking" in t["state"]
@@ -592,6 +645,20 @@ def process_state_machine(config, state, client):
                                                     norm_target_hash = normalize_info_hash(racing_hash)
                                                     for res in search_results:
                                                         res_hash = normalize_info_hash(res.get("infoHash", ""))
+                                                        
+                                                        # Fallback: if Prowlarr doesn't return infoHash in search results, download and parse
+                                                        if not res_hash:
+                                                            download_url = res.get("downloadUrl")
+                                                            if download_url:
+                                                                logger.debug(f"Prowlarr search result missing infoHash. Downloading bytes to verify: {res.get('title')}")
+                                                                temp_bytes = download_torrent_bytes(download_url, prowlarr_api_key)
+                                                                if temp_bytes:
+                                                                    try:
+                                                                        decoded = bdecode(temp_bytes)
+                                                                        res_hash = hashlib.sha1(bencode(decoded[b'info'])).hexdigest().lower()
+                                                                    except Exception as parse_err:
+                                                                        logger.warning(f"Failed to parse downloaded torrent bytes: {parse_err}")
+                                                        
                                                         if res_hash == norm_target_hash:
                                                             download_url = res.get("downloadUrl")
                                                             if download_url:
@@ -776,6 +843,20 @@ def sweep_dangling_mappings(config, client):
                                         norm_target_hash = normalize_info_hash(racing_hash)
                                         for res in search_results:
                                             res_hash = normalize_info_hash(res.get("infoHash", ""))
+                                            
+                                            # Fallback: if Prowlarr doesn't return infoHash in search results, download and parse
+                                            if not res_hash:
+                                                download_url = res.get("downloadUrl")
+                                                if download_url:
+                                                    logger.debug(f"Sweep: Prowlarr search result missing infoHash. Downloading bytes to verify: {res.get('title')}")
+                                                    temp_bytes = download_torrent_bytes(download_url, prowlarr_api_key)
+                                                    if temp_bytes:
+                                                        try:
+                                                            decoded = bdecode(temp_bytes)
+                                                            res_hash = hashlib.sha1(bencode(decoded[b'info'])).hexdigest().lower()
+                                                        except Exception as parse_err:
+                                                            logger.warning(f"Sweep: Failed to parse downloaded torrent bytes: {parse_err}")
+                                            
                                             if res_hash == norm_target_hash:
                                                 download_url = res.get("downloadUrl")
                                                 if download_url:
@@ -825,8 +906,9 @@ def sweep_dangling_mappings(config, client):
                         logger.error(f"Sweep: Could not retrieve racing torrent bytes for {racing_hash}")
 
 def main():
-    logger.info("Starting sync loop daemon...")
     config = load_config()
+    setup_logging(config)
+    logger.info("Starting sync loop daemon...")
     start_telegram_listener(load_config)
     state = load_state()
     
