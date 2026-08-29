@@ -40,6 +40,9 @@ wait_time_minutes = 2.0
 
 # Sleep interval duration (seconds) between local loop cycles
 poll_interval_seconds = 10
+  
+  # Interval (seconds) between dangling tracker mapping sweeps (defaults to 600 seconds/10 minutes)
+  sweep_interval_seconds = 600
 
 # Duration to wait (seconds) after rclone move before adding to remote client, verifying mount updates
 fuse_cooldown_seconds = 15
@@ -103,6 +106,13 @@ indexer_name = "local"
 
 # Optional: The name of the racing tracker indexer in Prowlarr (used as a fallback to download the racing .torrent file for remote migration if the racing client doesn't support direct file exporting, e.g. Deluge)
 # racing_indexer_name = "racing"
+  
+  # Optional: Map tracker domains/sub-strings (from tracker_filters) to their Prowlarr indexer names.
+  # This is used as a fallback to fetch the .torrent file for remote migration when the racing client is Deluge.
+  [prowlarr.racing_indexer_map]
+  aither = "Aither"
+  beyond-hd = "Beyond-HD"
+  bhd = "Beyond-HD"
 
 
 # Bridge daemon racing parameters
@@ -111,7 +121,14 @@ indexer_name = "local"
 poll_interval_seconds = 60
 
 # Sub-string filter matching trackers of torrents to race on the racing client
-tracker_filter = "tracker_domain.com"
+# Sub-string filter matching trackers of torrents to race on the racing client (old setting, single tracker)
+  # tracker_filter = "tracker_domain.com"
+  
+  # List of sub-string filters matching trackers of torrents to race on the racing client
+  tracker_filters = ["aither", "beyond-hd", "bhd"]
+  
+  # Keywords to identify a matching public torrent in the racing client (e.g. for magnet fallback)
+  public_tracker_keywords = ["nyaa", "opentrackr", "mywaifu"]
 
 # Maximum time (hours) to keep searching Prowlarr before timing out/notifying
 max_search_age_hours = 24

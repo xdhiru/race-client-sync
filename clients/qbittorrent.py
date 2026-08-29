@@ -88,13 +88,30 @@ class QBittorrentClient(BaseTorrentClient):
         if not self.client:
             return False
         try:
-            self.client.torrents_add(
-                torrent_files=torrent_bytes,
-                save_path=save_path,
-                category=category,
-                is_skip_checking=is_skip_checking,
-                paused=paused
-            )
+            import os
+            if isinstance(torrent_bytes, str) and torrent_bytes.endswith(".magnet") and os.path.exists(torrent_bytes):
+                try:
+                    with open(torrent_bytes, "r", encoding="utf-8") as f:
+                        torrent_bytes = f.read().strip()
+                except Exception as e:
+                    logger.error(f"Failed to read magnet link from file {torrent_bytes}: {e}")
+
+            if isinstance(torrent_bytes, str) and (torrent_bytes.startswith("magnet:") or torrent_bytes.startswith("http")):
+                self.client.torrents_add(
+                    urls=torrent_bytes,
+                    save_path=save_path,
+                    category=category,
+                    is_skip_checking=is_skip_checking,
+                    paused=paused
+                )
+            else:
+                self.client.torrents_add(
+                    torrent_files=torrent_bytes,
+                    save_path=save_path,
+                    category=category,
+                    is_skip_checking=is_skip_checking,
+                    paused=paused
+                )
             return True
         except Exception as e:
             logger.error(f"Failed to add torrent to qBittorrent: {e}")

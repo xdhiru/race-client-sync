@@ -4,6 +4,16 @@ import time
 import logging
 import re
 import hashlib
+import urllib.parse
+
+def clean_search_query(name):
+    for ext in ['.mkv', '.mp4', '.avi', '.ts', '.mp3', '.flac']:
+        if name.lower().endswith(ext):
+            name = name[:-len(ext)]
+            break
+    cleaned = re.sub(r'[\s._-]', ' ', name)
+    return ' '.join(cleaned.split()).lower()
+
 
 import clients
 from utils.config import load_config
@@ -163,10 +173,15 @@ def main():
                     
                 trackers = t.get("trackers", [])
                 
+                # Support multiple racing tracker filters
+                tracker_filters = r_settings.get("tracker_filters", [tracker_filter])
                 is_match = False
                 for tracker in trackers:
-                    if tracker_filter in tracker:
-                        is_match = True
+                    for filt in tracker_filters:
+                        if filt.lower() in tracker.lower():
+                            is_match = True
+                            break
+                    if is_match:
                         break
                             
                 if not is_match:
@@ -176,6 +191,60 @@ def main():
                     logger.debug(f"Racing torrent {name} is still downloading (progress: {t['progress']*100:.1f}%). Skipping Prowlarr search.")
                     continue
                     
+                # Check if there is a public matching torrent in the racing client before searching Prowlarr
+                public_keywords = r_settings.get("public_tracker_keywords", ["nyaa", "opentrackr", "mywaifu"])
+                public_match = None
+                
+                try:
+                    target_name_clean = clean_search_query(name)
+                    for rt in torrents:
+                        rt_name = rt.get("name", "")
+                        # Check if name is matching (case-insensitive or cleaned name match)
+                        if clean_search_query(rt_name) != target_name_clean and rt_name.lower() != name.lower():
+                            continue
+                            
+                        # Check if it has any public trackers
+                        rt_trackers = rt.get("trackers", [])
+                        is_public = False
+                        for tr in rt_trackers:
+                            for kw in public_keywords:
+                                if kw.lower() in tr.lower():
+                                    is_public = True
+                                    break
+                            if is_public:
+                                break
+                        
+                        if is_public:
+                            public_match = rt
+                            break
+                except Exception as e:
+                    logger.error(f"Error checking for public matching torrent: {e}")
+
+                if public_match:
+                    matched_local_hash = public_match["hash"].lower()
+                    logger.info(f"Found public matching torrent in racing client: '{public_match['name']}' (Hash: {matched_local_hash})")
+                    
+                    # Construct magnet link
+                    magnet_link = f"magnet:?xt=urn:btih:{matched_local_hash}&dn={urllib.parse.quote(public_match['name'])}"
+                    for tr in public_match.get("trackers", []):
+                        magnet_link += f"&tr={urllib.parse.quote(tr)}"
+                        
+                    # Write .magnet file to watch_dir
+                    dest_path = os.path.join(watch_dir, f"{matched_local_hash}.magnet")
+                    try:
+                        with open(dest_path, "w", encoding="utf-8") as f_out:
+                            f_out.write(magnet_link)
+                        logger.info(f"Successfully saved magnet file: {dest_path}")
+                        
+                        register_tracker_mapping(matched_local_hash, info_hash)
+                        
+                        processed_hashes[info_hash] = "completed"
+                        active_searches.pop(info_hash, None)
+                        save_state(state)
+                        continue
+                    except Exception as write_err:
+                        logger.error(f"Failed to write magnet file {dest_path}: {write_err}")
+
                 if info_hash not in active_searches:
                     active_searches[info_hash] = {
                         "name": name,

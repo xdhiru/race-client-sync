@@ -31,36 +31,49 @@ def get_tracker_mapping(local_hash):
         with open(MAPPINGS_PATH, "r", encoding="utf-8") as f:
             mappings = json.load(f)
         val = mappings.get(local_hash)
-        if val:
+        if val is not None:
             return val
         double_hex = local_hash.encode('utf-8').hex()
         val = mappings.get(double_hex)
-        if val:
+        if val is not None:
             return val
     except Exception as e:
         logger.error(f"Failed to read mappings file: {e}")
     return None
 
-def remove_tracker_mapping(local_hash):
+def remove_tracker_mapping(local_hash, racing_hash=None):
     if not os.path.exists(MAPPINGS_PATH):
         return
     try:
         with open(MAPPINGS_PATH, "r", encoding="utf-8") as f:
             mappings = json.load(f)
+        
         has_changed = False
-        if local_hash in mappings:
-            mappings.pop(local_hash)
-            has_changed = True
-        double_hex = local_hash.encode('utf-8').hex()
-        if double_hex in mappings:
-            mappings.pop(double_hex)
-            has_changed = True
+        for key in [local_hash, local_hash.encode('utf-8').hex()]:
+            if key in mappings:
+                if racing_hash is None:
+                    mappings.pop(key)
+                    has_changed = True
+                else:
+                    existing = mappings[key]
+                    if isinstance(existing, str):
+                        existing = [existing]
+                    if not isinstance(existing, list):
+                        existing = []
+                    if racing_hash in existing:
+                        existing.remove(racing_hash)
+                        has_changed = True
+                    if not existing:
+                        mappings.pop(key)
+                    else:
+                        mappings[key] = existing
+                        
         if has_changed:
             d = os.path.dirname(MAPPINGS_PATH)
             if d: os.makedirs(d, exist_ok=True)
             with open(MAPPINGS_PATH, "w", encoding="utf-8") as f:
                 json.dump(mappings, f, indent=2)
-            logger.info(f"Removed mapping for local hash {local_hash}")
+            logger.info(f"Removed mapping for local hash {local_hash} (racing: {racing_hash})")
     except Exception as e:
         logger.error(f"Failed to remove mapping: {e}")
 
@@ -73,13 +86,22 @@ def register_tracker_mapping(local_hash, racing_hash):
         except Exception as e:
             logger.error(f"Failed to load mappings: {e}")
             
-    mappings[local_hash] = racing_hash
+    existing = mappings.get(local_hash, [])
+    if isinstance(existing, str):
+        existing = [existing]
+    elif not isinstance(existing, list):
+        existing = []
+        
+    if racing_hash not in existing:
+        existing.append(racing_hash)
+        
+    mappings[local_hash] = existing
     
     try:
         d = os.path.dirname(MAPPINGS_PATH)
         if d: os.makedirs(d, exist_ok=True)
         with open(MAPPINGS_PATH, "w", encoding="utf-8") as f:
             json.dump(mappings, f, indent=2)
-        logger.info(f"Registered mapping: Local {local_hash} -> Racing {racing_hash}")
+        logger.info(f"Registered mapping: Local {local_hash} -> Racing {existing}")
     except Exception as e:
         logger.error(f"Failed to save mappings file after registering mapping: {e}")
