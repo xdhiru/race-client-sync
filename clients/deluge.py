@@ -66,7 +66,8 @@ class DelugeClient(BaseTorrentClient):
                     raise Exception(f"Deluge Web API error: {res['error']}")
                 return res
         except Exception as e:
-            logger.error(f"Deluge JSON-RPC request failed ({method}): {e}")
+            if not method.startswith("label."):
+                logger.error(f"Deluge JSON-RPC request failed ({method}): {e}")
             raise e
 
     def connect(self) -> bool:

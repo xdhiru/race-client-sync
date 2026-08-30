@@ -12,7 +12,7 @@ import re
 
 import clients
 from utils.config import load_config
-from utils.state import load_json_state, save_json_state, get_tracker_mapping, remove_tracker_mapping, MAPPINGS_PATH
+from utils.state import load_json_state, save_json_state, get_tracker_mapping, remove_tracker_mapping, MAPPINGS_PATH, get_tracker_mapping, remove_tracker_mapping, MAPPINGS_PATH
 import hashlib
 from utils.torrent import get_torrent_details, bdecode, bencode
 from services.prowlarr import get_prowlarr_indexer_id, search_prowlarr, download_torrent_bytes
@@ -111,6 +111,12 @@ def setup_logging(config):
     # File Handler
     log_file = settings.get("torrent_sync_log_file", "data/torrent_sync.log")
     try:
+        import os
+        # Create parent directory if it doesn't exist
+        log_dir = os.path.dirname(log_file)
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
+            
         # Resolve log file relative to config.toml or current directory
         fh = logging.FileHandler(log_file, encoding='utf-8')
         fh.setLevel(file_level)
@@ -240,6 +246,145 @@ def get_job_remote_paths(config, torrent_name):
 # Main Process Loop
 # ==============================================================================
 
+
+def normalize_info_hash(h):
+    if not h:
+        return ""
+    h = h.strip().lower()
+    if len(h) == 80:
+        try:
+            h = bytes.fromhex(h).decode('utf-8').lower()
+        except Exception:
+            pass
+    return h
+
+def clean_search_query(name):
+    import re
+    ext = os.path.splitext(name)[1]
+    if ext.lower() in ['.mkv', '.mp4', '.avi']:
+        name = name[:-len(ext)]
+    cleaned = re.sub(r'[\s._-]', ' ', name)
+    return ' '.join(cleaned.split())
+
+def inject_racing_torrents(local_info_hash, remote_save_path, config, normal_client):
+    racing_hashes = get_tracker_mapping(local_info_hash)
+    if not racing_hashes:
+        return
+        
+    if isinstance(racing_hashes, str):
+        racing_hashes = [racing_hashes]
+        
+    racing_client = get_racing_client(config)
+    if not racing_client:
+        logger.error("Failed to connect to racing client for synchronous injection.")
+        return
+        
+    for racing_hash in list(racing_hashes):
+        logger.info(f"Synchronous Injection: Found completed Local torrent {local_info_hash} with pending Tracker mapping {racing_hash}. Migrating now.")
+        
+        racing_torrent_bytes = None
+        try:
+            racing_torrent_bytes = racing_client.export_torrent(racing_hash)
+        except Exception as e:
+            logger.warning(f"Failed to export Racing torrent {racing_hash} from racing client: {e}. Retrying with Prowlarr fallback.")
+            
+        if not racing_torrent_bytes:
+            p_config = config.get("prowlarr", {})
+            racing_indexer_map = p_config.get("racing_indexer_map", {})
+            
+            try:
+                racing_torrents = racing_client.get_torrents_info()
+                racing_t = next((t for t in racing_torrents if t["hash"].lower() == racing_hash.lower()), None)
+                if racing_t:
+                    query_name = racing_t["name"]
+                    trackers = racing_t.get("trackers", [])
+                    
+                    active_indexer_name = None
+                    for tracker in trackers:
+                        for key, idx_name in racing_indexer_map.items():
+                            if key.lower() in tracker.lower():
+                                active_indexer_name = idx_name
+                                break
+                        if active_indexer_name:
+                            break
+                            
+                    indexers_to_search = []
+                    if active_indexer_name:
+                        indexers_to_search = [active_indexer_name]
+                    else:
+                        fallback_name = p_config.get("racing_indexer_name")
+                        if fallback_name:
+                            indexers_to_search.append(fallback_name)
+                            
+                    prowlarr_url = p_config["url"]
+                    prowlarr_api_key = p_config["api_key"]
+                    
+                    for idx_name in indexers_to_search:
+                        try:
+                            racing_indexer_id = get_prowlarr_indexer_id(prowlarr_url, prowlarr_api_key, idx_name)
+                            if racing_indexer_id:
+                                sanitized_query = clean_search_query(query_name)
+                                search_results = search_prowlarr(prowlarr_url, prowlarr_api_key, racing_indexer_id, sanitized_query)
+                                
+                                for res in search_results:
+                                    res_hash = normalize_info_hash(res.get("infoHash", ""))
+                                    if not res_hash:
+                                        download_url = res.get("downloadUrl")
+                                        if download_url:
+                                            temp_bytes = download_torrent_bytes(download_url, prowlarr_api_key)
+                                            if temp_bytes:
+                                                try:
+                                                    decoded = bdecode(temp_bytes)
+                                                    import hashlib
+                                                    res_hash = hashlib.sha1(bencode(decoded[b'info'])).hexdigest().lower()
+                                                except Exception:
+                                                    pass
+                                                    
+                                    if res_hash == normalize_info_hash(racing_hash):
+                                        download_url = res.get("downloadUrl")
+                                        if download_url:
+                                            racing_torrent_bytes = download_torrent_bytes(download_url, prowlarr_api_key)
+                                            break
+                                if racing_torrent_bytes:
+                                    break
+                        except Exception as p_err:
+                            logger.error(f"Error during Prowlarr fallback search: {p_err}")
+            except Exception as e:
+                logger.error(f"Fallback resolution failed: {e}")
+                
+        if racing_torrent_bytes:
+            try:
+                migration_ok = False
+                try:
+                    normal_client.add_torrent(
+                        torrent_bytes=racing_torrent_bytes,
+                        save_path=remote_save_path,
+                        category=config["paths"].get("remote_category", "remote"),
+                        is_skip_checking=True
+                    )
+                    logger.info(f"Successfully added Racing torrent {racing_hash} to normal client pointing to FUSE: {remote_save_path}")
+                    remove_tracker_mapping(local_info_hash, racing_hash)
+                    migration_ok = True
+                except Exception as add_err:
+                    err_msg_lower = str(add_err).lower()
+                    if "torrent hash" in err_msg_lower or "409" in err_msg_lower or "conflict" in err_msg_lower:
+                        logger.info(f"Racing torrent {racing_hash} already exists in normal client.")
+                        remove_tracker_mapping(local_info_hash, racing_hash)
+                        migration_ok = True
+                    else:
+                        logger.error(f"Failed to add Racing torrent {racing_hash} to normal client: {add_err}")
+                        
+                if migration_ok:
+                    try:
+                        racing_completed_cat = config.get("racing_settings", {}).get("completed_category", "processed")
+                        racing_client.set_category(racing_hash, racing_completed_cat)
+                    except Exception as cat_err:
+                        pass
+            except Exception as e:
+                logger.error(f"Failed to migrate racing torrent {racing_hash}: {e}")
+        else:
+            logger.error(f"Could not retrieve racing torrent bytes for {racing_hash}")
+
 def process_state_machine(config, state, client):
     active_jobs = state["active_jobs"]
     wait_time_minutes = config["settings"].get("wait_time_minutes", 5.0)
@@ -327,18 +472,15 @@ def process_state_machine(config, state, client):
                                     save_state(state)
                                     state_changed = True
                                     
-                                    racing_hash = get_tracker_mapping(info_hash)
-                                    if not racing_hash:
-                                        stem = os.path.splitext(os.path.basename(job["torrent_file"]))[0]
-                                        racing_hash = get_tracker_mapping(stem)
-                                        
                                     send_already_seeding_notification(
                                         config,
                                         name=job["name"],
                                         size=job["size"],
-                                        tracker=job.get("tracker", "Unknown"),
-                                        racing_hash=racing_hash
+                                        tracker=job.get("tracker", "Unknown")
                                     )
+                                    
+                                    # SYNCHRONOUS INJECTION: Inject any pending racing torrents right now
+                                    inject_racing_torrents(info_hash, remote_save_path_cfg, config, client)
                                     
                                     continue
                                 except Exception as e:
@@ -624,245 +766,16 @@ def process_state_machine(config, state, client):
                     update_telegram_status(config, job, info_hash)
                     
                     # Check if there are pending racing tracker mappings
-                    racing_hashes = get_tracker_mapping(info_hash)
-                    if racing_hashes:
-                        logger.info(f"Torrent {job['name']} has pending racing tracker mappings. The background sweep worker will handle migration.")
-                    
+                    # SYNCHRONOUS INJECTION: Inject any pending racing torrents right now
+                    remote_save_path_cfg = config["paths"]["remote_save_path"]
+                    inject_racing_torrents(info_hash, remote_save_path_cfg, config, client)
+
                     # Always pop the job from active_jobs immediately.
-                    # Racing tracker mappings persist in tracker_mappings.json and
-                    # will be resolved by the background sweep worker thread, which
-                    # runs independently without blocking the main state machine loop.
                     active_jobs.pop(info_hash, None)
                     save_state(state)
             if job["state"] == original_state:
                 break
 
-
-def sweep_dangling_mappings(config, client):
-    if not os.path.exists(MAPPINGS_PATH):
-        return
-    try:
-        with open(MAPPINGS_PATH, "r", encoding="utf-8") as f:
-            mappings = json.load(f)
-        if not mappings:
-            return
-    except Exception as e:
-        logger.error(f"Failed to read mappings file for sweep: {e}")
-        return
-
-    racing_client = None
-    try:
-        racing_client = get_racing_client(config)
-    except Exception as e:
-        logger.error(f"Failed to connect to racing client for sweep: {e}")
-        return
-
-    if not racing_client:
-        return
-
-    try:
-        normal_torrents = client.get_torrents_info()
-        normal_torrents_by_hash = {t["hash"]: t for t in normal_torrents}
-    except Exception as e:
-        logger.error(f"Failed to fetch normal client torrents for sweep: {e}")
-        return
-
-    for local_hash, racing_hashes in list(mappings.items()):
-        local_hash_clean = local_hash.lower()
-        if len(local_hash_clean) == 80:
-            try:
-                local_hash_clean = bytes.fromhex(local_hash_clean).decode('utf-8').lower()
-            except Exception:
-                pass
-
-        t = normal_torrents_by_hash.get(local_hash_clean)
-        if t:
-            is_checking = t["state"].startswith("checking") or "checking" in t["state"]
-            
-            remote_save_path = config["paths"]["remote_save_path"]
-            t_save_path_normalized = os.path.normpath(t["save_path"]).lower()
-            remote_save_path_normalized = os.path.normpath(remote_save_path).lower()
-            
-            is_on_fuse = (
-                t_save_path_normalized == remote_save_path_normalized or
-                t_save_path_normalized.startswith(remote_save_path_normalized + os.sep)
-            )
-            
-            if t["progress"] == 1.0 and not is_checking and is_on_fuse:
-                if isinstance(racing_hashes, str):
-                    racing_hashes = [racing_hashes]
-                elif not isinstance(racing_hashes, list):
-                    continue
-                    
-                for racing_hash in racing_hashes:
-                    logger.info(f"Sweep: Found completed Local torrent {local_hash_clean} in normal client with pending Tracker mapping {racing_hash}. Migrating now.")
-                    remote_save_path = t["save_path"]
-                    
-                    racing_torrent_bytes = None
-                    try:
-                        racing_torrent_bytes = racing_client.export_torrent(racing_hash)
-                    except NotImplementedError:
-                        logger.info(f"Sweep: Export not supported by racing client. Attempting Prowlarr fallback search for racing hash {racing_hash}.")
-                    except Exception as e:
-                        logger.warning(f"Sweep: Failed to export Racing torrent {racing_hash} from racing client: {e}. Retrying with Prowlarr fallback.")
-
-                    if not racing_torrent_bytes:
-                        p_config = config.get("prowlarr", {})
-                        
-                        # Cooldown check to prevent Prowlarr lookup starvation
-                        search_interval_minutes = config.get("racing_settings", {}).get("search_interval_minutes", 15)
-                        search_interval_seconds = search_interval_minutes * 60
-                        last_search = last_dangling_search_times.get(racing_hash, 0)
-                        if time.time() - last_search < search_interval_seconds:
-                            logger.debug(f"Sweep: Skipping Prowlarr fallback search for racing hash {racing_hash} (cooldown not elapsed).")
-                            continue
-                        last_dangling_search_times[racing_hash] = time.time()
-                        
-                        racing_indexer_map = p_config.get("racing_indexer_map", {})
-                        
-                        query_name = t["name"]
-                        trackers = []
-                        try:
-                            racing_torrents = racing_client.get_torrents_info()
-                            racing_t_by_hash = {rt["hash"].lower(): rt for rt in racing_torrents}
-                            norm_racing_hash = normalize_info_hash(racing_hash)
-                            if norm_racing_hash in racing_t_by_hash:
-                                query_name = racing_t_by_hash[norm_racing_hash]["name"]
-                                trackers = racing_t_by_hash[norm_racing_hash].get("trackers", [])
-                                logger.info(f"Sweep: Using actual racing torrent name for Prowlarr query: '{query_name}'")
-                        except Exception as name_err:
-                            logger.warning(f"Sweep: Could not retrieve racing torrent name from Deluge: {name_err}. Falling back to local name.")
-
-                        active_indexer_name = None
-                        for tracker in trackers:
-                            for key, idx_name in racing_indexer_map.items():
-                                if key.lower() in tracker.lower():
-                                    active_indexer_name = idx_name
-                                    break
-                            if active_indexer_name:
-                                break
-                                
-                        indexers_to_search = []
-                        if active_indexer_name:
-                            indexers_to_search = [active_indexer_name]
-                        else:
-                            if racing_indexer_map:
-                                seen = set()
-                                indexers_to_search = [x for x in racing_indexer_map.values() if not (x in seen or seen.add(x))]
-                            fallback_name = p_config.get("racing_indexer_name")
-                            if fallback_name and fallback_name not in indexers_to_search:
-                                indexers_to_search.append(fallback_name)
-
-                        if not indexers_to_search:
-                            logger.error(f"Sweep: Failed to export racing torrent {racing_hash} and no indexers configured in config.")
-                        else:
-                            prowlarr_url = p_config["url"]
-                            prowlarr_api_key = p_config["api_key"]
-                            for idx_name in indexers_to_search:
-                                try:
-                                    racing_indexer_id = get_prowlarr_indexer_id(prowlarr_url, prowlarr_api_key, idx_name)
-                                    if racing_indexer_id:
-                                        sanitized_query = clean_search_query(query_name)
-                                        search_results = search_prowlarr(prowlarr_url, prowlarr_api_key, racing_indexer_id, sanitized_query)
-                                        norm_target_hash = normalize_info_hash(racing_hash)
-                                        for res in search_results:
-                                            res_hash = normalize_info_hash(res.get("infoHash", ""))
-                                            
-                                            # Fallback: if Prowlarr doesn't return infoHash in search results, download and parse
-                                            if not res_hash:
-                                                download_url = res.get("downloadUrl")
-                                                if download_url:
-                                                    logger.debug(f"Sweep: Prowlarr search result missing infoHash. Downloading bytes to verify: {res.get('title')}")
-                                                    temp_bytes = download_torrent_bytes(download_url, prowlarr_api_key)
-                                                    if temp_bytes:
-                                                        try:
-                                                            decoded = bdecode(temp_bytes)
-                                                            res_hash = hashlib.sha1(bencode(decoded[b'info'])).hexdigest().lower()
-                                                        except Exception as parse_err:
-                                                            logger.warning(f"Sweep: Failed to parse downloaded torrent bytes: {parse_err}")
-                                            
-                                            if res_hash == norm_target_hash:
-                                                download_url = res.get("downloadUrl")
-                                                if download_url:
-                                                    logger.info(f"Sweep: Found matching racing torrent on Prowlarr via indexer '{idx_name}'. Downloading: {res.get('title')}")
-                                                    racing_torrent_bytes = download_torrent_bytes(download_url, prowlarr_api_key)
-                                                    break
-                                        if racing_torrent_bytes:
-                                            break
-                                    else:
-                                        logger.warning(f"Sweep: Could not resolve indexer ID for racing indexer '{idx_name}'")
-                                except Exception as p_err:
-                                    logger.error(f"Sweep: Error during Prowlarr fallback search on indexer '{idx_name}': {p_err}")
-
-                    if racing_torrent_bytes:
-                        try:
-                            migration_ok = False
-                            try:
-                                client.add_torrent(
-                                    torrent_bytes=racing_torrent_bytes,
-                                    save_path=remote_save_path,
-                                    category=config["paths"].get("remote_category", "remote"),
-                                    is_skip_checking=True
-                                )
-                                logger.info(f"Sweep: Successfully added Racing torrent {racing_hash} to normal client pointing to FUSE: {remote_save_path}")
-                                remove_tracker_mapping(local_hash, racing_hash)
-                                migration_ok = True
-                            except Exception as add_err:
-                                err_msg_lower = str(add_err).lower()
-                                if "torrent hash" in err_msg_lower or "409" in err_msg_lower or "conflict" in err_msg_lower:
-                                    logger.info(f"Sweep: Racing torrent {racing_hash} already exists in normal client.")
-                                    remove_tracker_mapping(local_hash, racing_hash)
-                                    migration_ok = True
-                                else:
-                                    logger.error(f"Sweep: Failed to add Racing torrent {racing_hash} to normal client: {add_err}")
-                                    migration_ok = False
-                                    
-                            if migration_ok:
-                                racing_settings = config.get("racing_settings", {})
-                                racing_completed_cat = racing_settings.get("completed_category", "processed")
-                                try:
-                                    racing_client.set_category(racing_hash, racing_completed_cat)
-                                except Exception as cat_err:
-                                    logger.warning(f"Sweep: Failed to set category for racing torrent {racing_hash}: {cat_err}")
-                        except Exception as e:
-                            logger.error(f"Sweep: Failed to migrate racing torrent {racing_hash} for local torrent {local_hash_clean}: {e}")
-                    else:
-                        logger.error(f"Sweep: Could not retrieve racing torrent bytes for {racing_hash}")
-
-def sweep_worker(config_loader):
-    """Background worker thread that periodically runs sweep_dangling_mappings.
-    
-    Uses its own dedicated qBittorrent client connection so it never blocks
-    the main state machine loop. This allows the main loop to stay responsive
-    for cooldown timers, rclone moves, and torrent scheduling.
-    """
-    sweep_client = None
-    last_sweep_time = 0
-    
-    while True:
-        try:
-            config = config_loader()
-            sweep_interval = config.get("settings", {}).get("sweep_interval_seconds", 600)
-            
-            if time.time() - last_sweep_time < sweep_interval:
-                time.sleep(min(30, sweep_interval))
-                continue
-            
-            # Create/refresh a dedicated client connection for the sweep
-            if sweep_client is None or not sweep_client.check_health():
-                sweep_client = get_qb_client(config)
-                if sweep_client is None:
-                    logger.warning("Sweep worker: Could not connect to qBittorrent. Retrying next cycle.")
-                    time.sleep(60)
-                    continue
-            
-            logger.debug("Sweep worker: Running dangling mappings sweep...")
-            sweep_dangling_mappings(config, sweep_client)
-            last_sweep_time = time.time()
-            
-        except Exception as e:
-            logger.error(f"Error in sweep worker thread: {e}", exc_info=True)
-            time.sleep(60)
 
 def main():
     config = load_config()
@@ -878,9 +791,6 @@ def main():
     client = None
     consecutive_connection_failures = 0
     # Start the background sweep worker thread with its own client connection
-    sweep_thread = threading.Thread(target=sweep_worker, args=(load_config,), daemon=True)
-    sweep_thread.start()
-    logger.info("Background sweep worker thread started.")
         
     
     while True:
@@ -1185,18 +1095,22 @@ def main():
                         racing_hash=racing_hash
                     )
                     save_state(state)
+                    
+                    # SYNCHRONOUS INJECTION: Inject any pending racing torrents right now
+                    inject_racing_torrents(info_hash, remote_save_path_cfg, config, client)
+                    
                     continue
                 
                 if active_downloads >= max_active_downloads:
                     logger.info(f"Reached max concurrent downloads limit ({active_downloads}/{max_active_downloads}). Waiting to schedule {details['name']}.")
-                    break
+                    continue
                     
                 first_batch_size = batches[0]["size"]
                 if occupied_space + first_batch_size <= ssd_limit:
                     physical_free = get_physical_free_space(config["paths"]["local_save_path"])
                     if physical_free < first_batch_size:
                         logger.warning(f"Torrent {details['name']} fits in budget, but physical disk space is too low! Required: {first_batch_size / (1024**3):.2f} GB, Free: {physical_free / (1024**3):.2f} GB. Waiting.")
-                        break
+                        continue
                         
                     logger.info(f"Scheduling torrent {details['name']} (Total: {size / (1024**3):.2f} GB, Batch 1: {first_batch_size / (1024**3):.2f} GB) under SSD limit ({ssd_limit / (1024**3):.2f} GB)")
                     try:
@@ -1255,7 +1169,7 @@ def main():
                         logger.error(f"Failed to add torrent {torrent_file} to client: {e}")
                 else:
                     logger.info(f"Torrent {details['name']} (First Batch: {first_batch_size / (1024**3):.2f} GB) does not fit in remaining SSD space (Free: {(ssd_limit - occupied_space) / (1024**3):.2f} GB). Waiting.")
-                    break
+                    continue
                     
         except Exception as e:
             logger.error(f"Unexpected error in main daemon loop: {e}", exc_info=True)
@@ -1264,3 +1178,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

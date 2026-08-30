@@ -62,6 +62,11 @@ def setup_logging(config):
     # File Handler
     log_file = settings.get("racing_link_log_file", "data/racing_link.log")
     try:
+        import os
+        log_dir = os.path.dirname(log_file)
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
+            
         fh = logging.FileHandler(log_file, encoding='utf-8')
         fh.setLevel(file_level)
         fh.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] (%(filename)s:%(lineno)d) %(message)s'))
@@ -275,30 +280,27 @@ def main():
                         with open(dest_path, "wb") as f_out:
                             f_out.write(torrent_bytes)
                         logger.info(f"Successfully saved exported .torrent file: {dest_path}")
-                        
                         register_tracker_mapping(matched_local_hash, info_hash)
                     except Exception as export_err:
                         logger.warning(f"Failed to export .torrent from racing client ({export_err}). Falling back to magnet link generation.")
-                        # Construct magnet link
                         import urllib.parse
                         magnet_link = f"magnet:?xt=urn:btih:{matched_local_hash}&dn={urllib.parse.quote(public_match['name'])}"
                         for tr in public_match.get("trackers", []):
                             magnet_link += f"&tr={urllib.parse.quote(tr)}"
                             
-                        # Write .magnet file to watch_dir
                         magnet_path = os.path.join(watch_dir, f"{matched_local_hash}.magnet")
                         try:
                             with open(magnet_path, "w", encoding="utf-8") as f_out:
                                 f_out.write(magnet_link)
                             logger.info(f"Successfully saved magnet file fallback: {magnet_path}")
                             register_tracker_mapping(matched_local_hash, info_hash)
-                        
-                        processed_hashes[info_hash] = "completed"
-                        active_searches.pop(info_hash, None)
-                        save_state(state)
-                        continue
-                    except Exception as write_err:
-                        logger.error(f"Failed to write magnet file {dest_path}: {write_err}")
+                        except Exception as write_err:
+                            logger.error(f"Failed to write magnet file fallback {magnet_path}: {write_err}")
+                            
+                    processed_hashes[info_hash] = "completed"
+                    active_searches.pop(info_hash, None)
+                    save_state(state)
+                    continue
 
                 if info_hash not in active_searches:
                     active_searches[info_hash] = {

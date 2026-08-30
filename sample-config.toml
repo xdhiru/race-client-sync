@@ -98,18 +98,19 @@ type = "deluge"
 url = "http://127.0.0.1:8112/"
 password = "your_deluge_webui_password"
 
-# Optional: Deluge state directory (where .torrent files are stored).
-# If provided, the daemon will securely read .torrent files from this folder to skip Prowlarr fallback searches.
-# If your racing client is on the same machine (or mounted via Syncthing), this is a local path:
+# --- REQUIRED for Deluge Extraction: State Directory ---
+# The absolute path to the Deluge 'state' directory (where .torrent files are stored).
+# This MUST be uncommented and set to either a local path or a remote VPS path.
 # state_dir = "/home/kevin/.config/deluge/state"
 
-# --- Remote Deluge VPS Fetching (SSH/SCP) ---
-# If your racing Deluge is on a remote VPS and you are NOT using Syncthing, you can provide SSH details.
-# The daemon will securely fetch the .torrent files via SCP. 'state_dir' above must be set to the remote path.
+# --- Remote Deluge VPS Fetching (SSH/SFTP) ---
+# If your racing Deluge is on a remote VPS and you are NOT using Syncthing, provide SSH details.
+# The daemon will securely fetch the .torrent files directly over SSH. 
+# NOTE: You MUST uncomment and set 'state_dir' above to the absolute path on the REMOTE VPS!
 # ssh_host = "your.vps.ip.address"
 # ssh_user = "root"
 # ssh_key_path = "/home/kevin/.ssh/id_rsa"
-# ssh_key_password = "your_key_passphrase_here" # Optional, if your key is encrypted
+# ssh_key_password = "your_key_passphrase_here" # Optional, if your SSH key requires a password
 # ssh_port = 22
 
 # Optional: Nginx Basic Auth credentials (supported by both Deluge and qBittorrent wrappers)
