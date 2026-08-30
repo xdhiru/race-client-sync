@@ -255,335 +255,388 @@ def process_state_machine(config, state, client):
 
     for info_hash in list(active_jobs.keys()):
         job = active_jobs[info_hash]
-        current_state = job["state"]
-        
-        # --- STATE: added_local ---
-        if current_state == "added_local":
-            t = torrents_by_hash.get(info_hash)
-            if not t:
-                if not os.path.exists(job["torrent_file"]):
-                    logger.warning(f"Torrent file {job['torrent_file']} missing. Removing from state.")
-                    active_jobs.pop(info_hash, None)
-                    save_state(state)
-                continue
-                
-            # If it's a magnet torrent, check if metadata has downloaded
-            if job.get("is_magnet", False):
-                try:
-                    files = client.get_torrent_files(info_hash)
-                    if files:
-                        total_size = sum(f.get("size", 0) for f in files)
-                        job["size"] = total_size
-                        job["is_multi_file"] = len(files) > 1
-                        
-                        # Build batches
-                        batches = build_batches_from_files(files, ssd_limit)
-                        job["batches"] = batches
-                        job["current_batch_index"] = 0
-                        job["is_magnet"] = False
-                        save_state(state)
-                        logger.info(f"Metadata downloaded for magnet torrent {job['name']}. Formed {len(batches)} batch(es).")
-                    else:
-                        logger.info(f"Waiting for metadata download for magnet torrent {job['name']}...")
-                        continue
-                except Exception as e:
-                    logger.warning(f"Failed to fetch files for magnet torrent {job['name']} (probably waiting for metadata): {e}")
-                    continue
-
-            if not job.get("priorities_configured", False):
-                logger.info(f"Enforcing/retrying batch priorities configuration for {job['name']}.")
-                try:
-                    try:
-                        client.pause_torrent(info_hash)
-                    except Exception:
-                        pass
-                        
-                    files = client.get_torrent_files(info_hash)
-                    if files:
-                        all_ids = [f["id"] for f in files]
-                        curr_idx = job.get("current_batch_index", 0)
-                        batch_ids = job["batches"][curr_idx]["file_ids"]
-                        client.set_file_priorities(info_hash, all_ids, 0)
-                        client.set_file_priorities(info_hash, batch_ids, 1)
-                        client.resume_torrent(info_hash)
-                        
-                        job["priorities_configured"] = True
-                        save_state(state)
-                        logger.info(f"Successfully configured batch priorities for {job['name']}.")
-                except Exception as e:
-                    logger.warning(f"Failed to configure batch priorities for {job['name']} in state machine: {e}. Will retry.")
-                    
-            is_complete = False
-            total_batches = len(job.get("batches", []))
-            t_progress = t.get("progress", 0.0) if t else 0.0
-            t_state = t.get("state", "") if t else ""
-            is_qb_seeding = t_progress >= 1.0 or t_state.endswith("up") or "upload" in t_state or "stalled" in t_state and t_progress >= 0.999
-
-            # If the torrent is a single batch and qBittorrent reports completion, complete immediately
-            if total_batches <= 1 and is_qb_seeding:
-                is_complete = True
-            elif "batches" in job and "current_batch_index" in job:
-                try:
-                    files = client.get_torrent_files(info_hash)
-                    if files:
-                        curr_idx = job["current_batch_index"]
-                        batch_ids = set(job["batches"][curr_idx]["file_ids"])
-                        
-                        batch_completed_size = 0.0
-                        for f in files:
-                            if f.get("id") in batch_ids:
-                                f_prog = f.get("progress", 0.0)
-                                batch_completed_size += (f.get("size", 0) * f_prog)
-                                
-                        batch_total_size = job["batches"][curr_idx]["size"]
-                        batch_progress = (batch_completed_size / batch_total_size) if batch_total_size > 0 else 1.0
-                        
-                        if batch_progress >= 0.999 or is_qb_seeding:
-                            is_complete = True
-                    elif is_qb_seeding:
-                        is_complete = True
-                    else:
-                        logger.warning(f"No files returned by client for torrent {job['name']}. Waiting.")
-                except Exception as e:
-                    logger.warning(f"Failed to check batch progress for {job['name']}: {e}")
-                    if is_qb_seeding:
-                        is_complete = True
-            else:
-                if is_qb_seeding:
-                    is_complete = True
-
-            if is_complete:
-                curr_batch = job.get("current_batch_index", 0) + 1
-                batch_str = f"Batch {curr_batch}/{total_batches}" if total_batches > 1 else "Torrent"
-                logger.info(f"{batch_str} completed downloading for {job['name']}. Starting cooldown ({wait_time_minutes:.1f} min).")
-                job["state"] = "waiting_5min"
-                job["completion_time"] = time.time()
-                update_telegram_status(config, job, info_hash)
-                save_state(state)
-
-        # --- STATE: waiting_5min ---
-        elif current_state == "waiting_5min":
-            elapsed = time.time() - job["completion_time"]
-            if elapsed >= wait_time_seconds:
-                logger.info(f"Cooldown completed for {job['name']}. Deleting local torrent from qBittorrent and starting rclone move.")
-                try:
-                    client.delete_torrent(info_hash, delete_files=False)
-                    job["state"] = "rclone_moving"
-                    job["rclone_retries"] = 0
-                    job["move_start_time"] = time.time()
-                    save_state(state)
-                except Exception as e:
-                    logger.error(f"Failed to delete torrent {info_hash} from client: {e}")
-
-        # --- STATE: rclone_moving ---
-        elif current_state == "rclone_moving":
-            status = rclone_status.get(info_hash)
+        while True:
+            current_state = job["state"]
+            original_state = current_state
             
-            if status is None:
-                max_jobs = config.get("rclone", {}).get("max_parallel_jobs", 2)
-                running_jobs = sum(1 for val in rclone_status.values() if val == "running")
-                if running_jobs >= max_jobs:
-                    logger.debug(f"rclone move for {job['name']} waiting. Current running: {running_jobs}/{max_jobs}")
+            # --- STATE: added_local ---
+            if current_state == "added_local":
+                t = torrents_by_hash.get(info_hash)
+                if not t:
+                    if not os.path.exists(job["torrent_file"]):
+                        logger.warning(f"Torrent file {job['torrent_file']} missing. Removing from state.")
+                        active_jobs.pop(info_hash, None)
+                        save_state(state)
                     continue
                     
-                local_dir = config["paths"]["local_save_path"]
-                remote_target, remote_save_path = get_job_remote_paths(config, job["name"])
-                rclone_transfers = config.get("rclone", {}).get("transfers", 2)
-                
-                if "batches" in job and "current_batch_index" in job:
-                    batch = job["batches"][job["current_batch_index"]]
-                    cmd = ["rclone", "move", local_dir, remote_target, f"--transfers={rclone_transfers}"]
-                    for path in batch["file_paths"]:
-                        cmd.extend(["--include", escape_rclone_glob(path)])
-                else:
-                    if job["is_multi_file"]:
-                        src = os.path.join(local_dir, job["name"])
-                        dest = f"{remote_target.rstrip('/')}/{job['name']}"
-                        cmd = ["rclone", "move", src, dest, f"--transfers={rclone_transfers}"]
-                    else:
-                        src = os.path.join(local_dir, job["name"])
-                        dest = f"{remote_target.rstrip('/')}/{job['name']}"
-                        cmd = ["rclone", "moveto", src, dest, f"--transfers={rclone_transfers}"]
-                    
-                run_rclone_move_async(info_hash, cmd)
-                
-            elif status == "success":
-                logger.info(f"rclone move successful for {job['name']}. Cleaning up local torrent folder/file.")
-                
-                local_path = os.path.join(config["paths"]["local_save_path"], job["name"])
-                if os.path.exists(local_path):
+                # If it's a magnet torrent, check if metadata has downloaded
+                if job.get("is_magnet", False):
                     try:
-                        if os.path.isdir(local_path):
-                            shutil.rmtree(local_path)
-                            logger.info(f"Cleaned up local folder: {local_path}")
+                        files = client.get_torrent_files(info_hash)
+                        if files:
+                            total_size = sum(f.get("size", 0) for f in files)
+                            
+                            try:
+                                t_info = client.get_torrents_info()
+                                my_t = next((t for t in t_info if t["hash"] == info_hash), None)
+                                if my_t:
+                                    job["name"] = my_t["name"]
+                            except Exception:
+                                pass
+                            
+                            job["size"] = total_size
+                            job["is_multi_file"] = len(files) > 1
+                            
+                            remote_save_path_cfg = config["paths"]["remote_save_path"]
+                            fuse_target = os.path.join(remote_save_path_cfg, job["name"])
+                            
+                            if os.path.exists(fuse_target):
+                                logger.info(f"Magnet {job['name']} already exists on FUSE mount ({fuse_target}). Archiving and switching to remote tracking.")
+                                try:
+                                    completed_dir = config["paths"].get("completed_dir")
+                                    if not completed_dir:
+                                        watch_dir = config["paths"]["watch_dir"]
+                                        completed_dir = os.path.join(watch_dir, "completed")
+                                    os.makedirs(completed_dir, exist_ok=True)
+                                    dest_file = os.path.join(completed_dir, os.path.basename(job["torrent_file"]))
+                                    if os.path.exists(dest_file):
+                                        base, ext = os.path.splitext(dest_file)
+                                        dest_file = f"{base}_{int(time.time())}{ext}"
+                                    if os.path.exists(job["torrent_file"]):
+                                        import shutil
+                                        shutil.move(job["torrent_file"], dest_file)
+                                        
+                                    torrent_bytes = client.export_torrent(info_hash)
+                                    client.delete_torrent(info_hash, delete_files=False)
+                                    client.add_torrent(
+                                        torrent_bytes=torrent_bytes,
+                                        save_path=remote_save_path_cfg,
+                                        category=config["paths"].get("remote_category", "remote"),
+                                        is_skip_checking=True,
+                                        paused=True
+                                    )
+                                    try:
+                                        client.resume_torrent(info_hash)
+                                    except Exception:
+                                        pass
+                                        
+                                    job["is_magnet"] = False
+                                    job["state"] = "added_remote"
+                                    job["added_remote_time"] = time.time()
+                                    job["completion_time"] = time.time()
+                                    save_state(state)
+                                    state_changed = True
+                                    
+                                    racing_hash = get_tracker_mapping(info_hash)
+                                    if not racing_hash:
+                                        stem = os.path.splitext(os.path.basename(job["torrent_file"]))[0]
+                                        racing_hash = get_tracker_mapping(stem)
+                                        
+                                    send_already_seeding_notification(
+                                        config,
+                                        name=job["name"],
+                                        size=job["size"],
+                                        tracker=job.get("tracker", "Unknown"),
+                                        racing_hash=racing_hash
+                                    )
+                                    
+                                    continue
+                                except Exception as e:
+                                    logger.error(f"Failed to switch magnet {job['name']} to FUSE path: {e}")
+                            
+                            # Build batches
+                            batches = build_batches_from_files(files, ssd_limit)
+                            job["batches"] = batches
+                            job["current_batch_index"] = 0
+                            job["is_magnet"] = False
+                            save_state(state)
+                            logger.info(f"Metadata downloaded for magnet torrent {job['name']}. Formed {len(batches)} batch(es).")
                         else:
-                            os.remove(local_path)
-                            logger.info(f"Cleaned up local file: {local_path}")
+                            logger.info(f"Waiting for metadata download for magnet torrent {job['name']}...")
+                            continue
                     except Exception as e:
-                        logger.error(f"Failed to clean up local path {local_path}: {e}")
-                
-                next_idx = job.get("current_batch_index", 0) + 1 if "batches" in job else 1
-                total_batches = len(job["batches"]) if "batches" in job else 1
-                
-                if next_idx < total_batches:
-                    logger.info(f"Completed batch {next_idx}/{total_batches} for {job['name']}. Re-adding torrent for batch {next_idx + 1}.")
+                        logger.warning(f"Failed to fetch files for magnet torrent {job['name']} (probably waiting for metadata): {e}")
+                        continue
+
+                if not job.get("priorities_configured", False):
+                    logger.info(f"Enforcing/retrying batch priorities configuration for {job['name']}.")
                     try:
-                        client.add_torrent(
-                            torrent_bytes=job["torrent_file"],
-                            save_path=config["paths"]["local_save_path"],
-                            category=config["paths"].get("category"),
-                            paused=True
-                        )
-                    except Exception as e:
-                        err_msg_lower = str(e).lower()
-                        if "torrent hash" in err_msg_lower or "409" in err_msg_lower or "conflict" in err_msg_lower:
-                            logger.info(f"Torrent {job['name']} already exists when re-adding for next batch. Proceeding.")
-                        else:
-                            raise e
-                    try:
-                        client.pause_torrent(info_hash)
-                    except Exception:
-                        pass
-                        
-                    files_list = []
-                    for _ in range(10):
                         try:
-                            files_list = client.get_torrent_files(info_hash)
-                            if files_list:
-                                break
+                            client.pause_torrent(info_hash)
                         except Exception:
                             pass
-                        time.sleep(1)
+                            
+                        files = client.get_torrent_files(info_hash)
+                        if files:
+                            all_ids = [f["id"] for f in files]
+                            curr_idx = job.get("current_batch_index", 0)
+                            batch_ids = job["batches"][curr_idx]["file_ids"]
+                            client.set_file_priorities(info_hash, all_ids, 0)
+                            client.set_file_priorities(info_hash, batch_ids, 1)
+                            client.resume_torrent(info_hash)
+                            
+                            job["priorities_configured"] = True
+                            save_state(state)
+                            logger.info(f"Successfully configured batch priorities for {job['name']}.")
+                    except Exception as e:
+                        logger.warning(f"Failed to configure batch priorities for {job['name']} in state machine: {e}. Will retry.")
                         
-                    if not files_list:
-                        raise ValueError("Could not load file list from client after re-adding paused torrent")
-                        
-                    all_ids = [f["id"] for f in files_list]
-                    next_batch_ids = job["batches"][next_idx]["file_ids"]
-                    client.set_file_priorities(info_hash, all_ids, 0)
-                    client.set_file_priorities(info_hash, next_batch_ids, 1)
-                    client.resume_torrent(info_hash)
-                    
-                    job["current_batch_index"] = next_idx
-                    job["state"] = "added_local"
-                    job["added_time"] = time.time()
-                    job["completion_time"] = None
-                    save_state(state)
+                is_complete = False
+                total_batches = len(job.get("batches", []))
+                t_progress = t.get("progress", 0.0) if t else 0.0
+                t_state = t.get("state", "") if t else ""
+                is_qb_seeding = t_progress >= 1.0 or t_state.endswith("up") or "upload" in t_state or "stalled" in t_state and t_progress >= 0.999
+
+                # If the torrent is a single batch and qBittorrent reports completion, complete immediately
+                if total_batches <= 1 and is_qb_seeding:
+                    is_complete = True
+                elif "batches" in job and "current_batch_index" in job:
+                    try:
+                        files = client.get_torrent_files(info_hash)
+                        if files:
+                            curr_idx = job["current_batch_index"]
+                            batch_ids = set(job["batches"][curr_idx]["file_ids"])
+                            
+                            batch_completed_size = 0.0
+                            for f in files:
+                                if f.get("id") in batch_ids:
+                                    f_prog = f.get("progress", 0.0)
+                                    batch_completed_size += (f.get("size", 0) * f_prog)
+                                    
+                            batch_total_size = job["batches"][curr_idx]["size"]
+                            batch_progress = (batch_completed_size / batch_total_size) if batch_total_size > 0 else 1.0
+                            
+                            if batch_progress >= 0.999 or is_qb_seeding:
+                                is_complete = True
+                        elif is_qb_seeding:
+                            is_complete = True
+                        else:
+                            logger.warning(f"No files returned by client for torrent {job['name']}. Waiting.")
+                    except Exception as e:
+                        logger.warning(f"Failed to check batch progress for {job['name']}: {e}")
+                        if is_qb_seeding:
+                            is_complete = True
                 else:
-                    logger.info(f"All batches completed for {job['name']}. Entering FUSE mount wait state.")
-                    job["state"] = "fuse_wait"
-                    job["move_completed_time"] = time.time()
-                    save_state(state)
-                    
-                rclone_status.pop(info_hash, None)
-                rclone_threads.pop(info_hash, None)
-                
-            elif status.startswith("failed") or status.startswith("error"):
-                logger.error(f"rclone move failed for {job['name']}: {status}")
-                rclone_status.pop(info_hash, None)
-                rclone_threads.pop(info_hash, None)
-                
-                max_retries = config.get("rclone", {}).get("max_retries", 3)
-                retries = job.get("rclone_retries", 0) + 1
-                job["rclone_retries"] = retries
-                
-                if retries <= max_retries:
-                    logger.info(f"Retrying rclone move for {job['name']} (attempt {retries}/{max_retries}) in 30s...")
+                    if is_qb_seeding:
+                        is_complete = True
+
+                if is_complete:
+                    curr_batch = job.get("current_batch_index", 0) + 1
+                    batch_str = f"Batch {curr_batch}/{total_batches}" if total_batches > 1 else "Torrent"
+                    logger.info(f"{batch_str} completed downloading for {job['name']}. Starting cooldown ({wait_time_minutes:.1f} min).")
                     job["state"] = "waiting_5min"
-                    job["completion_time"] = time.time() - wait_time_seconds + 30
-                    save_state(state)
-                else:
-                    logger.error(f"Rclone move failed after {max_retries} attempts for {job['name']}. Giving up.")
-                    job["state"] = "rclone_failed"
-                    job["error_msg"] = status
+                    job["completion_time"] = time.time()
                     update_telegram_status(config, job, info_hash)
                     save_state(state)
 
-        # --- STATE: fuse_wait ---
-        elif current_state == "fuse_wait":
-            fuse_cooldown = config["settings"].get("fuse_cooldown_seconds", 15)
-            elapsed = time.time() - job["move_completed_time"]
-            if elapsed >= fuse_cooldown:
-                logger.info(f"FUSE cooldown of {fuse_cooldown}s completed for {job['name']}. Adding to remote seeding path directly.")
-                remote_target, remote_save_path = get_job_remote_paths(config, job["name"])
-                
-                try:
+            # --- STATE: waiting_5min ---
+            elif current_state == "waiting_5min":
+                elapsed = time.time() - job["completion_time"]
+                if elapsed >= wait_time_seconds:
+                    logger.info(f"Cooldown completed for {job['name']}. Deleting local torrent from qBittorrent and starting rclone move.")
                     try:
+                        client.delete_torrent(info_hash, delete_files=False)
+                        job["state"] = "rclone_moving"
+                        job["rclone_retries"] = 0
+                        job["move_start_time"] = time.time()
+                        save_state(state)
+                    except Exception as e:
+                        logger.error(f"Failed to delete torrent {info_hash} from client: {e}")
+
+            # --- STATE: rclone_moving ---
+            elif current_state == "rclone_moving":
+                status = rclone_status.get(info_hash)
+                
+                if status is None:
+                    max_jobs = config.get("rclone", {}).get("max_parallel_jobs", 2)
+                    running_jobs = sum(1 for val in rclone_status.values() if val == "running")
+                    if running_jobs >= max_jobs:
+                        logger.debug(f"rclone move for {job['name']} waiting. Current running: {running_jobs}/{max_jobs}")
+                        continue
+                        
+                    local_dir = config["paths"]["local_save_path"]
+                    remote_target, remote_save_path = get_job_remote_paths(config, job["name"])
+                    rclone_transfers = config.get("rclone", {}).get("transfers", 2)
+                    
+                    if "batches" in job and "current_batch_index" in job:
+                        batch = job["batches"][job["current_batch_index"]]
+                        cmd = ["rclone", "move", local_dir, remote_target, f"--transfers={rclone_transfers}"]
+                        for path in batch["file_paths"]:
+                            cmd.extend(["--include", escape_rclone_glob(path)])
+                    else:
+                        if job["is_multi_file"]:
+                            src = os.path.join(local_dir, job["name"])
+                            dest = f"{remote_target.rstrip('/')}/{job['name']}"
+                            cmd = ["rclone", "move", src, dest, f"--transfers={rclone_transfers}"]
+                        else:
+                            src = os.path.join(local_dir, job["name"])
+                            dest = f"{remote_target.rstrip('/')}/{job['name']}"
+                            cmd = ["rclone", "moveto", src, dest, f"--transfers={rclone_transfers}"]
+                        
+                    run_rclone_move_async(info_hash, cmd)
+                    
+                elif status == "success":
+                    logger.info(f"rclone move successful for {job['name']}. Cleaning up local torrent folder/file.")
+                    
+                    local_path = os.path.join(config["paths"]["local_save_path"], job["name"])
+                    if os.path.exists(local_path):
+                        try:
+                            if os.path.isdir(local_path):
+                                shutil.rmtree(local_path)
+                                logger.info(f"Cleaned up local folder: {local_path}")
+                            else:
+                                os.remove(local_path)
+                                logger.info(f"Cleaned up local file: {local_path}")
+                        except Exception as e:
+                            logger.error(f"Failed to clean up local path {local_path}: {e}")
+                    
+                    next_idx = job.get("current_batch_index", 0) + 1 if "batches" in job else 1
+                    total_batches = len(job["batches"]) if "batches" in job else 1
+                    
+                    if next_idx < total_batches:
+                        logger.info(f"Completed batch {next_idx}/{total_batches} for {job['name']}. Re-adding torrent for batch {next_idx + 1}.")
+                        try:
+                            client.add_torrent(
+                                torrent_bytes=job["torrent_file"],
+                                save_path=config["paths"]["local_save_path"],
+                                category=config["paths"].get("category"),
+                                paused=True
+                            )
+                        except Exception as e:
+                            err_msg_lower = str(e).lower()
+                            if "torrent hash" in err_msg_lower or "409" in err_msg_lower or "conflict" in err_msg_lower:
+                                logger.info(f"Torrent {job['name']} already exists when re-adding for next batch. Proceeding.")
+                            else:
+                                raise e
+                        try:
+                            client.pause_torrent(info_hash)
+                        except Exception:
+                            pass
+                            
+                        job["current_batch_index"] = next_idx
+                        job["state"] = "added_local"
+                        job["added_time"] = time.time()
+                        job["completion_time"] = None
+                        job["priorities_configured"] = False
+                        save_state(state)
+                    else:
+                        logger.info(f"All batches completed for {job['name']}. Entering FUSE mount wait state.")
+                        job["state"] = "fuse_wait"
+                        job["move_completed_time"] = time.time()
+                        save_state(state)
+                        
+                    rclone_status.pop(info_hash, None)
+                    rclone_threads.pop(info_hash, None)
+                    
+                elif status.startswith("failed") or status.startswith("error"):
+                    logger.error(f"rclone move failed for {job['name']}: {status}")
+                    rclone_status.pop(info_hash, None)
+                    rclone_threads.pop(info_hash, None)
+                    
+                    max_retries = config.get("rclone", {}).get("max_retries", 3)
+                    retries = job.get("rclone_retries", 0) + 1
+                    job["rclone_retries"] = retries
+                    
+                    if retries <= max_retries:
+                        logger.info(f"Retrying rclone move for {job['name']} (attempt {retries}/{max_retries}) in 30s...")
+                        job["state"] = "waiting_5min"
+                        job["completion_time"] = time.time() - wait_time_seconds + 30
+                        save_state(state)
+                    else:
+                        logger.error(f"Rclone move failed after {max_retries} attempts for {job['name']}. Giving up.")
+                        job["state"] = "rclone_failed"
+                        job["error_msg"] = status
+                        update_telegram_status(config, job, info_hash)
+                        save_state(state)
+
+            # --- STATE: fuse_wait ---
+            elif current_state == "fuse_wait":
+                fuse_cooldown = config["settings"].get("fuse_cooldown_seconds", 15)
+                elapsed = time.time() - job["move_completed_time"]
+                if elapsed >= fuse_cooldown:
+                    logger.info(f"FUSE cooldown of {fuse_cooldown}s completed for {job['name']}. Adding to remote seeding path directly.")
+                    remote_target, remote_save_path = get_job_remote_paths(config, job["name"])
+                    
+                    try:
+                        try:
+                            client.add_torrent(
+                                torrent_bytes=job["torrent_file"],
+                                save_path=remote_save_path,
+                                category=config["paths"].get("remote_category", "remote"),
+                                is_skip_checking=True
+                            )
+                        except Exception as e:
+                            err_msg_lower = str(e).lower()
+                            if "torrent hash" in err_msg_lower or "409" in err_msg_lower or "conflict" in err_msg_lower:
+                                logger.info(f"Torrent {job['name']} already exists on remote path. Proceeding.")
+                            else:
+                                raise e
+                        job["state"] = "added_remote"
+                        job["readd_start_time"] = time.time()
+                        save_state(state)
+                        logger.info(f"Successfully re-added torrent {job['name']} to remote path.")
+                    except Exception as e:
+                        logger.error(f"Failed to re-add torrent {job['name']} to remote path: {e}")
+
+            # --- STATE: added_remote ---
+            elif current_state == "added_remote":
+                t = torrents_by_hash.get(info_hash)
+                if not t:
+                    # If the torrent is missing from normal client, try to re-add it (self-healing)
+                    elapsed_since_readd = time.time() - job.get("readd_start_time", 0)
+                    if elapsed_since_readd > 30:
+                        logger.warning(f"Torrent {job['name']} missing from client in added_remote state. Retrying add.")
+                        remote_target, remote_save_path = get_job_remote_paths(config, job["name"])
                         client.add_torrent(
                             torrent_bytes=job["torrent_file"],
                             save_path=remote_save_path,
                             category=config["paths"].get("remote_category", "remote"),
                             is_skip_checking=True
                         )
-                    except Exception as e:
-                        err_msg_lower = str(e).lower()
-                        if "torrent hash" in err_msg_lower or "409" in err_msg_lower or "conflict" in err_msg_lower:
-                            logger.info(f"Torrent {job['name']} already exists on remote path. Proceeding.")
-                        else:
-                            raise e
-                    job["state"] = "added_remote"
-                    job["readd_start_time"] = time.time()
-                    save_state(state)
-                    logger.info(f"Successfully re-added torrent {job['name']} to remote path.")
-                except Exception as e:
-                    logger.error(f"Failed to re-add torrent {job['name']} to remote path: {e}")
-
-        # --- STATE: added_remote ---
-        elif current_state == "added_remote":
-            t = torrents_by_hash.get(info_hash)
-            if not t:
-                # If the torrent is missing from normal client, try to re-add it (self-healing)
-                elapsed_since_readd = time.time() - job.get("readd_start_time", 0)
-                if elapsed_since_readd > 30:
-                    logger.warning(f"Torrent {job['name']} missing from client in added_remote state. Retrying add.")
-                    remote_target, remote_save_path = get_job_remote_paths(config, job["name"])
-                    client.add_torrent(
-                        torrent_bytes=job["torrent_file"],
-                        save_path=remote_save_path,
-                        category=config["paths"].get("remote_category", "remote"),
-                        is_skip_checking=True
-                    )
-                    job["readd_start_time"] = time.time()
-                    save_state(state)
-                continue
-                
-            is_checking = t["state"].startswith("checking") or "checking" in t["state"]
-            if t["progress"] == 1.0 and not is_checking:
-                logger.info(f"Torrent successfully seeding from remote path: {job['name']}. Archiving .torrent file.")
-                
-                completed_dir = config["paths"].get("completed_dir")
-                if not completed_dir:
-                    watch_dir = config["paths"]["watch_dir"]
-                    completed_dir = os.path.join(watch_dir, "completed")
-                
-                try:
-                    os.makedirs(completed_dir, exist_ok=True)
-                    dest_file = os.path.join(completed_dir, os.path.basename(job["torrent_file"]))
+                        job["readd_start_time"] = time.time()
+                        save_state(state)
+                    continue
                     
-                    if os.path.exists(dest_file):
-                        base, ext = os.path.splitext(dest_file)
-                        dest_file = f"{base}_{int(time.time())}{ext}"
+                is_checking = t["state"].startswith("checking") or "checking" in t["state"]
+                if t["progress"] == 1.0 and not is_checking:
+                    logger.info(f"Torrent successfully seeding from remote path: {job['name']}. Archiving .torrent file.")
+                    
+                    completed_dir = config["paths"].get("completed_dir")
+                    if not completed_dir:
+                        watch_dir = config["paths"]["watch_dir"]
+                        completed_dir = os.path.join(watch_dir, "completed")
+                    
+                    try:
+                        os.makedirs(completed_dir, exist_ok=True)
+                        dest_file = os.path.join(completed_dir, os.path.basename(job["torrent_file"]))
                         
-                    shutil.move(job["torrent_file"], dest_file)
-                    logger.info(f"Moved {job['torrent_file']} to {dest_file}")
-                except Exception as e:
-                    logger.error(f"Failed to archive torrent file {job['torrent_file']}: {e}")
-                
-                job["state"] = "completed"
-                job["seeding_completed_time"] = time.time()
-                update_telegram_status(config, job, info_hash)
-                
-                # Check if there are pending racing tracker mappings
-                racing_hashes = get_tracker_mapping(info_hash)
-                if racing_hashes:
-                    logger.info(f"Torrent {job['name']} has pending racing tracker mappings. The background sweep worker will handle migration.")
-                
-                # Always pop the job from active_jobs immediately.
-                # Racing tracker mappings persist in tracker_mappings.json and
-                # will be resolved by the background sweep worker thread, which
-                # runs independently without blocking the main state machine loop.
-                active_jobs.pop(info_hash, None)
-                save_state(state)
+                        if os.path.exists(dest_file):
+                            base, ext = os.path.splitext(dest_file)
+                            dest_file = f"{base}_{int(time.time())}{ext}"
+                            
+                        shutil.move(job["torrent_file"], dest_file)
+                        logger.info(f"Moved {job['torrent_file']} to {dest_file}")
+                    except Exception as e:
+                        logger.error(f"Failed to archive torrent file {job['torrent_file']}: {e}")
+                    
+                    job["state"] = "completed"
+                    job["seeding_completed_time"] = time.time()
+                    update_telegram_status(config, job, info_hash)
+                    
+                    # Check if there are pending racing tracker mappings
+                    racing_hashes = get_tracker_mapping(info_hash)
+                    if racing_hashes:
+                        logger.info(f"Torrent {job['name']} has pending racing tracker mappings. The background sweep worker will handle migration.")
+                    
+                    # Always pop the job from active_jobs immediately.
+                    # Racing tracker mappings persist in tracker_mappings.json and
+                    # will be resolved by the background sweep worker thread, which
+                    # runs independently without blocking the main state machine loop.
+                    active_jobs.pop(info_hash, None)
+                    save_state(state)
+            if job["state"] == original_state:
+                break
+
 
 def sweep_dangling_mappings(config, client):
     if not os.path.exists(MAPPINGS_PATH):
@@ -1064,6 +1117,75 @@ def main():
                     except Exception as e:
                         logger.error(f"Failed to re-associate torrent {details['name']}: {e}")
                         continue
+                        
+                remote_save_path_cfg = config["paths"]["remote_save_path"]
+                fuse_target = os.path.join(remote_save_path_cfg, details["name"])
+                if os.path.exists(fuse_target):
+                    logger.info(f"Torrent {details['name']} already exists on FUSE mount ({fuse_target}). Adding to client in remote seeding state.")
+                    try:
+                        client.add_torrent(
+                            torrent_bytes=torrent_file,
+                            save_path=remote_save_path_cfg,
+                            category=config["paths"].get("remote_category", "remote"),
+                            is_skip_checking=True,
+                            paused=True
+                        )
+                    except Exception as e:
+                        err_msg_lower = str(e).lower()
+                        if "torrent hash" in err_msg_lower or "409" in err_msg_lower or "conflict" in err_msg_lower:
+                            pass
+                        else:
+                            logger.error(f"Failed to add existing FUSE torrent {details['name']} to client: {e}")
+                            continue
+                            
+                    try:
+                        client.resume_torrent(info_hash)
+                    except Exception:
+                        pass
+                        
+                    state["active_jobs"][info_hash] = {
+                        "torrent_file": torrent_file,
+                        "name": details["name"],
+                        "size": size,
+                        "is_multi_file": details["is_multi_file"],
+                        "tracker": details.get("tracker", "Unknown"),
+                        "state": "added_remote",
+                        "added_time": time.time(),
+                        "completion_time": time.time(),
+                        "added_remote_time": time.time(),
+                        "priorities_configured": True
+                    }
+                    
+                    completed_dir = config["paths"].get("completed_dir")
+                    if not completed_dir:
+                        watch_dir = config["paths"]["watch_dir"]
+                        completed_dir = os.path.join(watch_dir, "completed")
+                        
+                    try:
+                        os.makedirs(completed_dir, exist_ok=True)
+                        dest_file = os.path.join(completed_dir, os.path.basename(torrent_file))
+                        if os.path.exists(dest_file):
+                            base, ext = os.path.splitext(dest_file)
+                            dest_file = f"{base}_{int(time.time())}{ext}"
+                        shutil.move(torrent_file, dest_file)
+                        logger.info(f"Archived .torrent to {dest_file}.")
+                    except Exception as e:
+                        logger.error(f"Failed to archive completed torrent {torrent_file}: {e}")
+                        
+                    racing_hash = get_tracker_mapping(info_hash)
+                    if not racing_hash:
+                        stem = os.path.splitext(os.path.basename(torrent_file))[0]
+                        racing_hash = get_tracker_mapping(stem)
+                        
+                    send_already_seeding_notification(
+                        config,
+                        name=details["name"],
+                        size=details["size"],
+                        tracker=details.get("tracker", "Unknown"),
+                        racing_hash=racing_hash
+                    )
+                    save_state(state)
+                    continue
                 
                 if active_downloads >= max_active_downloads:
                     logger.info(f"Reached max concurrent downloads limit ({active_downloads}/{max_active_downloads}). Waiting to schedule {details['name']}.")
