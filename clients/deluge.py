@@ -153,7 +153,78 @@ class DelugeClient(BaseTorrentClient):
             return False
 
     def export_torrent(self, torrent_hash: str) -> bytes:
-        raise NotImplementedError("Deluge does not support exporting .torrent files via remote API.")
+        state_dir = self.config.get("state_dir")
+        if not state_dir:
+            raise NotImplementedError("Deluge does not support exporting .torrent files via remote API. Provide 'state_dir' in config to read from filesystem.")
+            
+        import os
+        import tempfile
+        
+        filename = f"{torrent_hash.lower()}.torrent"
+        
+        # Check if SSH parameters are provided for remote fetching
+        ssh_host = self.config.get("ssh_host")
+        if ssh_host:
+            try:
+                import paramiko
+            except ImportError:
+                raise ImportError("The 'paramiko' library is required for remote SSH fetching. Please run 'pip install paramiko'")
+                
+            ssh_user = self.config.get("ssh_user", "root")
+            ssh_key_path = self.config.get("ssh_key_path")
+            ssh_passphrase = self.config.get("ssh_key_password")
+            ssh_port = int(self.config.get("ssh_port", 22))
+            
+            remote_path = f"{state_dir.rstrip('/')}/{filename}"
+            
+            try:
+                ssh = paramiko.SSHClient()
+                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                
+                # Load private key (supports passphrases automatically if provided)
+                if ssh_key_path:
+                    try:
+                        # Attempt to load as RSA first (most common)
+                        key = paramiko.RSAKey.from_private_key_file(ssh_key_path, password=ssh_passphrase)
+                    except paramiko.ssh_exception.SSHException:
+                        try:
+                            # Fallback to Ed25519
+                            key = paramiko.Ed25519Key.from_private_key_file(ssh_key_path, password=ssh_passphrase)
+                        except paramiko.ssh_exception.SSHException:
+                            # Fallback to ECDSA
+                            key = paramiko.ECDSAKey.from_private_key_file(ssh_key_path, password=ssh_passphrase)
+                            
+                    ssh.connect(ssh_host, port=ssh_port, username=ssh_user, pkey=key)
+                else:
+                    # Password auth or ssh-agent fallback
+                    ssh.connect(ssh_host, port=ssh_port, username=ssh_user, password=ssh_passphrase)
+                    
+                sftp = ssh.open_sftp()
+                
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".torrent") as tmp:
+                    temp_local_path = tmp.name
+                    
+                sftp.get(remote_path, temp_local_path)
+                sftp.close()
+                ssh.close()
+                
+                with open(temp_local_path, "rb") as f:
+                    data = f.read()
+                os.remove(temp_local_path)
+                return data
+                
+            except Exception as e:
+                if 'temp_local_path' in locals() and os.path.exists(temp_local_path):
+                    os.remove(temp_local_path)
+                raise FileNotFoundError(f"Failed to fetch torrent file from remote VPS via SFTP: {e}")
+        
+        # Fallback to local filesystem access (e.g. Syncthing mount)
+        torrent_path = os.path.join(state_dir, filename)
+        if not os.path.exists(torrent_path):
+            raise FileNotFoundError(f"Deluge torrent file not found at {torrent_path}")
+            
+        with open(torrent_path, "rb") as f:
+            return f.read()
 
     def set_category(self, torrent_hash: str, category_name: str) -> bool:
         try:
@@ -187,3 +258,5 @@ class DelugeClient(BaseTorrentClient):
 
     def set_file_priorities(self, torrent_hash: str, file_ids: list, priority: int) -> bool:
         return False
+
+

@@ -268,19 +268,30 @@ def main():
                     matched_local_hash = public_match["hash"].lower()
                     logger.info(f"Found public matching torrent in racing client: '{public_match['name']}' (Hash: {matched_local_hash})")
                     
-                    # Construct magnet link
-                    magnet_link = f"magnet:?xt=urn:btih:{matched_local_hash}&dn={urllib.parse.quote(public_match['name'])}"
-                    for tr in public_match.get("trackers", []):
-                        magnet_link += f"&tr={urllib.parse.quote(tr)}"
-                        
-                    # Write .magnet file to watch_dir
-                    dest_path = os.path.join(watch_dir, f"{matched_local_hash}.magnet")
+                    dest_path = os.path.join(watch_dir, f"{matched_local_hash}.torrent")
                     try:
-                        with open(dest_path, "w", encoding="utf-8") as f_out:
-                            f_out.write(magnet_link)
-                        logger.info(f"Successfully saved magnet file: {dest_path}")
+                        logger.info(f"Exporting public .torrent file from racing client via SCP/API for hash {matched_local_hash}")
+                        torrent_bytes = client.export_torrent(matched_local_hash)
+                        with open(dest_path, "wb") as f_out:
+                            f_out.write(torrent_bytes)
+                        logger.info(f"Successfully saved exported .torrent file: {dest_path}")
                         
                         register_tracker_mapping(matched_local_hash, info_hash)
+                    except Exception as export_err:
+                        logger.warning(f"Failed to export .torrent from racing client ({export_err}). Falling back to magnet link generation.")
+                        # Construct magnet link
+                        import urllib.parse
+                        magnet_link = f"magnet:?xt=urn:btih:{matched_local_hash}&dn={urllib.parse.quote(public_match['name'])}"
+                        for tr in public_match.get("trackers", []):
+                            magnet_link += f"&tr={urllib.parse.quote(tr)}"
+                            
+                        # Write .magnet file to watch_dir
+                        magnet_path = os.path.join(watch_dir, f"{matched_local_hash}.magnet")
+                        try:
+                            with open(magnet_path, "w", encoding="utf-8") as f_out:
+                                f_out.write(magnet_link)
+                            logger.info(f"Successfully saved magnet file fallback: {magnet_path}")
+                            register_tracker_mapping(matched_local_hash, info_hash)
                         
                         processed_hashes[info_hash] = "completed"
                         active_searches.pop(info_hash, None)
@@ -415,3 +426,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
