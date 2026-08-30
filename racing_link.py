@@ -50,6 +50,11 @@ def setup_logging(config):
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.DEBUG)  # Capture all logs at root
 
+    # Silence verbose third-party loggers
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("requests").setLevel(logging.WARNING)
+    logging.getLogger("qbittorrentapi").setLevel(logging.WARNING)
+
     # Remove all existing handlers
     for handler in list(root_logger.handlers):
         root_logger.removeHandler(handler)
