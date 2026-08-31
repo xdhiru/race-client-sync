@@ -57,6 +57,59 @@ def send_telegram_notification(config, chat_id_key, text, reply_markup=None):
         payload["reply_markup"] = reply_markup
     call_telegram_api("sendMessage", payload, bot_token)
 
+def build_racing_keyboard(config, racing_hash):
+    if not racing_hash:
+        return None
+        
+    if isinstance(racing_hash, str):
+        racing_hashes = [racing_hash]
+    elif isinstance(racing_hash, list):
+        racing_hashes = racing_hash
+    else:
+        racing_hashes = []
+        
+    if not racing_hashes:
+        return None
+        
+    racing_torrents = []
+    try:
+        import clients
+        racing_client = clients.get_client(config.get("racing_client"))
+        if racing_client and racing_client.connect():
+            racing_torrents = racing_client.get_torrents_info()
+    except Exception as e:
+        logger.error(f"Failed to fetch racing client info for Telegram buttons: {e}")
+        
+    buttons = []
+    for rh in racing_hashes:
+        domain = ""
+        for t in racing_torrents:
+            if t["hash"] == rh:
+                trackers = t.get("trackers", [])
+                if trackers:
+                    domain = trackers[0].replace("https://", "").replace("http://", "").split("/")[0]
+                break
+        
+        button_text = f"Delete {domain} ({rh[:6]})" if domain else f"Delete {rh[:6]}"
+        buttons.append([
+            {
+                "text": button_text,
+                "callback_data": f"del_race:{rh}"
+            }
+        ])
+        
+    if len(racing_hashes) > 1:
+        buttons.append([
+            {
+                "text": "??? Remove All from Race Client",
+                "callback_data": "del_all"
+            }
+        ])
+        
+    if buttons:
+        return {"inline_keyboard": buttons}
+    return None
+
 def send_already_seeding_notification(config, name, size, tracker, racing_hash=None):
     tg_config = config.get("telegram", {})
     if not tg_config.get("enabled", False):
@@ -78,52 +131,9 @@ def send_already_seeding_notification(config, name, size, tracker, racing_hash=N
     }
     
     if racing_hash:
-        if isinstance(racing_hash, str):
-            racing_hashes = [racing_hash]
-        elif isinstance(racing_hash, list):
-            racing_hashes = racing_hash
-        else:
-            racing_hashes = []
-            
-        racing_torrents = []
-        try:
-            import clients
-            racing_client = clients.get_client(config.get("racing_client"))
-            if racing_client and racing_client.connect():
-                racing_torrents = racing_client.get_torrents_info()
-        except Exception as e:
-            logger.error(f"Failed to fetch racing client info for Telegram buttons: {e}")
-            
-        buttons = []
-        for rh in racing_hashes:
-            domain = ""
-            for t in racing_torrents:
-                if t["hash"] == rh:
-                    trackers = t.get("trackers", [])
-                    if trackers:
-                        domain = trackers[0].replace("https://", "").replace("http://", "").split("/")[0]
-                    break
-            
-            button_text = f"Delete {domain} ({rh[:6]})" if domain else f"Delete {rh[:6]}"
-            buttons.append([
-                {
-                    "text": button_text,
-                    "callback_data": f"del_race:{rh}"
-                }
-            ])
-            
-        if len(racing_hashes) > 1:
-            buttons.append([
-                {
-                    "text": "??? Remove All from Race Client",
-                    "callback_data": "del_all"
-                }
-            ])
-            
-        if buttons:
-            payload["reply_markup"] = {
-                "inline_keyboard": buttons
-            }
+        keyboard = build_racing_keyboard(config, racing_hash)
+        if keyboard:
+            payload["reply_markup"] = keyboard
         
     call_telegram_api("sendMessage", payload, bot_token)
 
@@ -190,7 +200,7 @@ def build_telegram_message_text(job, info_hash):
         
     return text
 
-def update_telegram_status(config, job, info_hash):
+def update_telegram_status(config, job, info_hash, racing_hash=None):
     tg_config = config.get("telegram", {})
     if not tg_config.get("enabled", False):
         return
@@ -204,22 +214,23 @@ def update_telegram_status(config, job, info_hash):
     text = build_telegram_message_text(job, info_hash)
     message_id = job.get("telegram_message_id")
     
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML"
+    }
+    
+    if racing_hash:
+        keyboard = build_racing_keyboard(config, racing_hash)
+        if keyboard:
+            payload["reply_markup"] = keyboard
+            
     if not message_id:
-        payload = {
-            "chat_id": chat_id,
-            "text": text,
-            "parse_mode": "HTML"
-        }
         res = call_telegram_api("sendMessage", payload, bot_token)
         if res and res.get("ok"):
             job["telegram_message_id"] = res["result"]["message_id"]
     else:
-        payload = {
-            "chat_id": chat_id,
-            "message_id": message_id,
-            "text": text,
-            "parse_mode": "HTML"
-        }
+        payload["message_id"] = message_id
         call_telegram_api("editMessageText", payload, bot_token)
 
 def handle_telegram_callback_query(config, cq, bot_token):

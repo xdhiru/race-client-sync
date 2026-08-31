@@ -763,7 +763,13 @@ def process_state_machine(config, state, client):
                     
                     job["state"] = "completed"
                     job["seeding_completed_time"] = time.time()
-                    update_telegram_status(config, job, info_hash)
+                    
+                    racing_hash = get_tracker_mapping(info_hash)
+                    if not racing_hash:
+                        stem = os.path.splitext(os.path.basename(job['torrent_file']))[0]
+                        racing_hash = get_tracker_mapping(stem)
+                        
+                    update_telegram_status(config, job, info_hash, racing_hash=racing_hash)
                     
                     # Check if there are pending racing tracker mappings
                     # SYNCHRONOUS INJECTION: Inject any pending racing torrents right now
