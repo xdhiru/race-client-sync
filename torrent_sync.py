@@ -247,25 +247,6 @@ def get_job_remote_paths(config, torrent_name):
 # ==============================================================================
 
 
-def normalize_info_hash(h):
-    if not h:
-        return ""
-    h = h.strip().lower()
-    if len(h) == 80:
-        try:
-            h = bytes.fromhex(h).decode('utf-8').lower()
-        except Exception:
-            pass
-    return h
-
-def clean_search_query(name):
-    import re
-    ext = os.path.splitext(name)[1]
-    if ext.lower() in ['.mkv', '.mp4', '.avi']:
-        name = name[:-len(ext)]
-    cleaned = re.sub(r'[\s._-]', ' ', name)
-    return ' '.join(cleaned.split())
-
 def get_torrent_files_sizes(files):
     if not files: return []
     return sorted([f["size"] for f in files])
