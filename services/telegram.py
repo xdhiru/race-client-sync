@@ -117,7 +117,7 @@ def build_racing_keyboard(config, racing_hash, public_hash=None):
         return {"inline_keyboard": buttons}
     return None
 
-def send_already_seeding_notification(config, name, size, tracker, racing_hash=None):
+def send_already_seeding_notification(config, name, size, tracker, racing_hash=None, info_hash=None):
     tg_config = config.get("telegram", {})
     if not tg_config.get("enabled", False):
         return
