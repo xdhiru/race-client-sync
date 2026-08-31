@@ -1,4 +1,3 @@
-import json
 import logging
 import requests
 from .base import BaseTorrentClient

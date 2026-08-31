@@ -4,7 +4,6 @@ import time
 import shutil
 import logging
 import threading
-from collections import deque
 
 from clients.base import AddTorrentResult
 import services.telegram_queue as tg_queue

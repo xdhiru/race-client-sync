@@ -128,8 +128,8 @@ def stop(timeout=5.0):
 
 
 def enqueue_status(job, info_hash):
-    if _stop_event is None:
-        return
+    if _stop_event is None or _queue is None:
+        start()
     state = job.get("state")
     # If it's a terminal or critical state, send immediately
     if state in ("completed", "rclone_failed", "add_remote_failed"):
@@ -142,12 +142,14 @@ def enqueue_status(job, info_hash):
 
 
 def enqueue_status_with_racing(job, info_hash, racing_hashes):
-    if _queue is None:
-        return
-    _queue.put(("status_with_racing", info_hash, dict(job), racing_hashes))
+    if _queue is None or _stop_event is None:
+        start()
+    if _queue is not None:
+        _queue.put(("status_with_racing", info_hash, dict(job), racing_hashes))
 
 
 def enqueue_already_seeding(info_hash, name, size, tracker, racing_hashes):
-    if _queue is None:
-        return
-    _queue.put(("already_seeding", info_hash, name, size, tracker, racing_hashes))
+    if _queue is None or _stop_event is None:
+        start()
+    if _queue is not None:
+        _queue.put(("already_seeding", info_hash, name, size, tracker, racing_hashes))

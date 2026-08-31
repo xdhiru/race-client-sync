@@ -1,8 +1,6 @@
 import os
 import sys
-import urllib.parse
 import time
-import json
 import glob
 import shutil
 import logging
@@ -14,16 +12,12 @@ import clients
 from clients.base import AddTorrentResult
 from utils.config import load_config
 from utils.state import load_json_state, save_json_state
-import hashlib
-from utils.torrent import get_torrent_details, bdecode, bencode
-from services.prowlarr import get_prowlarr_indexer_id, search_prowlarr, download_torrent_bytes
-from services.telegram import update_telegram_status, send_already_seeding_notification, start_telegram_listener
+from utils.torrent import get_torrent_details
+from services.telegram import start_telegram_listener
 import services.telegram_queue as tg_queue
 import racing_injector
 from state_machine import (
     TorrentJobStateMachine,
-    RCLONE_LOCK,
-    JOBS_LOCK,
     get_job_remote_paths,
     _build_batches_from_files,
     Transition,

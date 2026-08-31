@@ -1,7 +1,6 @@
 """Smoke test: verify per-job state machine transitions without qBittorrent."""
 import sys
 import time
-import threading
 from unittest.mock import MagicMock
 
 # Stub qbittorrentapi before any import that would pull it in.

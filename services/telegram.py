@@ -73,7 +73,6 @@ def build_racing_keyboard(config, racing_hash, public_hash=None):
         
     racing_torrents = []
     try:
-        import clients
         racing_client = clients.get_client(config.get("racing_client"))
         if racing_client and racing_client.connect():
             racing_torrents = racing_client.get_torrents_info()
@@ -299,7 +298,6 @@ def handle_telegram_callback_query(config, cq, bot_token):
         
         racing_client = None
         try:
-            import clients
             racing_client = clients.get_client(config.get("racing_client"))
             if racing_client and not racing_client.connect():
                 racing_client = None

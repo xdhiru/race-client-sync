@@ -1,18 +1,12 @@
-import os
 import re
-import time
 import threading
 import hashlib
 import logging
-import urllib.parse
 from queue import Queue, Empty
-from collections import deque
 
 import clients
 from services.prowlarr import get_prowlarr_indexer_id, search_prowlarr, download_torrent_bytes
-from services.telegram import send_telegram_notification
 from utils.torrent import bdecode, bencode, get_torrent_file_structure
-import services.telegram_queue as tg_queue
 
 logger = logging.getLogger(__name__)
 
@@ -20,8 +14,6 @@ _inject_queue = None
 _workers = []
 _stop_event = None
 MAX_WORKERS = 2
-MAX_RETRIES = 3
-RETRY_BACKOFF = 5.0
 
 
 def _clean_query(name):
@@ -200,7 +192,7 @@ def _worker_loop():
 
 
 def start():
-    global _inject_queue, _workers, _stop_event
+    global _inject_queue, _stop_event
     if _workers:
         return
     _inject_queue = Queue()
@@ -223,8 +215,9 @@ def stop(timeout=5.0):
 
 
 def enqueue_injection(info_hash, details, sorted_files, remote_save_path, config, origin_client):
-    if _inject_queue is None:
-        return
-    _inject_queue.put((
-        info_hash, details, sorted_files, remote_save_path, config, origin_client,
-    ))
+    if _inject_queue is None or _stop_event is None:
+        start()
+    if _inject_queue is not None:
+        _inject_queue.put((
+            info_hash, details, sorted_files, remote_save_path, config, origin_client,
+        ))

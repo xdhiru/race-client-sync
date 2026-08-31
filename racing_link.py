@@ -4,7 +4,6 @@ import time
 import logging
 import re
 import hashlib
-import urllib.parse
 
 def clean_search_query(name):
     for ext in ['.mkv', '.mp4', '.avi', '.ts', '.mp3', '.flac']:
