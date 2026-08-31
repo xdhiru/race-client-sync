@@ -201,8 +201,7 @@ def get_current_occupied_space(active_jobs):
                 idx = job["current_batch_index"]
                 if idx < len(job["batches"]):
                     occupied += job["batches"][idx]["size"]
-                else:
-                    occupied += job["size"]
+                # else: batch index OOB means all batches completed, occupied = 0
             else:
                 occupied += job["size"]
     return occupied
