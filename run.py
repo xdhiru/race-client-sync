@@ -58,7 +58,7 @@ def main():
     send_telegram_notification(
         config,
         "chat_id",
-        f"?? <b>Race Client Sync Started</b>\nCommand: <code>python {command_str}</code>"
+        f"🚀 <b>Race Client Sync Started</b>\nCommand: <code>python {command_str}</code>"
     )
 
     print("Starting qBittorrent FUSE and Racing Sync Automation...")

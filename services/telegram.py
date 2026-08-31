@@ -108,7 +108,7 @@ def build_racing_keyboard(config, racing_hash, public_hash=None):
     if len(actual_racing_hashes) > 1:
         buttons.append([
             {
-                "text": "??? Remove All from Race Client",
+                "text": "🗑️ Remove All from Race Client",
                 "callback_data": "del_all"
             }
         ])
@@ -293,7 +293,7 @@ def handle_telegram_callback_query(config, cq, bot_token):
         if not racing_client:
             call_telegram_api("answerCallbackQuery", {
                 "callback_query_id": callback_id,
-                "text": "? Could not connect to race client.",
+                "text": "❌ Could not connect to race client.",
                 "show_alert": True
             }, bot_token)
             return
@@ -308,7 +308,7 @@ def handle_telegram_callback_query(config, cq, bot_token):
             if success_count > 0:
                 call_telegram_api("answerCallbackQuery", {
                     "callback_query_id": callback_id,
-                    "text": f"? Successfully deleted {success_count} torrent(s)!"
+                    "text": f"✅ Successfully deleted {success_count} torrent(s)!"
                 }, bot_token)
                 
                 orig_text = message.get("text", "")
@@ -321,13 +321,13 @@ def handle_telegram_callback_query(config, cq, bot_token):
                         cb = button.get("callback_data", "")
                         if cb in [f"del_race:{h}" for h in hashes_to_delete]:
                             new_row.append({
-                                "text": button.get("text", "").replace("Delete ", "? Removed "),
+                                "text": button.get("text", "").replace("Delete ", "✅ Removed "),
                                 "callback_data": "ignore"
                             })
                         elif cb == "del_all":
                             if data == "del_all" or active_trackers <= 1:
                                 new_row.append({
-                                    "text": "? Removed All!",
+                                    "text": "✅ Removed All!",
                                     "callback_data": "ignore"
                                 })
                             else:
@@ -346,14 +346,14 @@ def handle_telegram_callback_query(config, cq, bot_token):
             else:
                 call_telegram_api("answerCallbackQuery", {
                     "callback_query_id": callback_id,
-                    "text": "? Failed to delete torrent from race client. Check logs.",
+                    "text": "❌ Failed to delete torrent from race client. Check logs.",
                     "show_alert": True
                 }, bot_token)
         except Exception as e:
             logger.error(f"Error executing Telegram deletion: {e}")
             call_telegram_api("answerCallbackQuery", {
                 "callback_query_id": callback_id,
-                "text": f"? Error: {str(e)[:50]}",
+                "text": f"❌ Error: {str(e)[:50]}",
                 "show_alert": True
             }, bot_token)
 
