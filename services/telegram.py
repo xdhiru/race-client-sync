@@ -97,13 +97,29 @@ def build_racing_keyboard(config, racing_hash, public_hash=None):
             continue
             
         actual_racing_hashes.append(rh)
-        button_text = f"Delete {domain} ({rh[:6]})" if domain else f"Delete {rh[:6]}"
-        buttons.append([
-            {
-                "text": button_text,
-                "callback_data": f"del_race:{rh}"
-            }
-        ])
+
+    # Re-build buttons in 2 columns
+    all_individual_buttons = []
+    for rh in actual_racing_hashes:
+        domain = ""
+        for t in racing_torrents:
+            if t["hash"] == rh:
+                trackers = t.get("trackers", [])
+                if trackers:
+                    domain = trackers[0].replace("https://", "").replace("http://", "").split("/")[0]
+                break
+        
+        # We need to extract the existing button prefix (which could be the trash can emoji)
+        # However, since the emoji was injected previously via a literal '🗑', 
+        # let's just safely use the literal!
+        button_text = f"🗑 {domain} ({rh[:6]})" if domain else f"🗑 {rh[:6]}"
+        all_individual_buttons.append({
+            "text": button_text,
+            "callback_data": f"del_race:{rh}"
+        })
+        
+    for i in range(0, len(all_individual_buttons), 2):
+        buttons.append(all_individual_buttons[i:i+2])
         
     if len(actual_racing_hashes) > 1:
         buttons.append([
