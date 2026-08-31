@@ -85,11 +85,29 @@ def send_already_seeding_notification(config, name, size, tracker, racing_hash=N
         else:
             racing_hashes = []
             
+        racing_torrents = []
+        try:
+            import clients
+            racing_client = clients.get_client(config.get("racing_client"))
+            if racing_client and racing_client.connect():
+                racing_torrents = racing_client.get_torrents_info()
+        except Exception as e:
+            logger.error(f"Failed to fetch racing client info for Telegram buttons: {e}")
+            
         buttons = []
         for rh in racing_hashes:
+            domain = ""
+            for t in racing_torrents:
+                if t["hash"] == rh:
+                    trackers = t.get("trackers", [])
+                    if trackers:
+                        domain = trackers[0].replace("https://", "").replace("http://", "").split("/")[0]
+                    break
+            
+            button_text = f"Delete {domain} ({rh[:6]})" if domain else f"Delete {rh[:6]}"
             buttons.append([
                 {
-                    "text": f"Delete {rh[:8]} from Race Client",
+                    "text": button_text,
                     "callback_data": f"del_race:{rh}"
                 }
             ])
@@ -206,6 +224,13 @@ def handle_telegram_callback_query(config, cq, bot_token):
     if not data or not callback_id:
         return
         
+    if data == "ignore":
+        call_telegram_api("answerCallbackQuery", {
+            "callback_query_id": callback_id,
+            "text": ""
+        }, bot_token)
+        return
+        
     if data.startswith("del_race:"):
         racing_hash = data.split("del_race:", 1)[1]
         logger.info(f"Telegram callback received: request to delete racing torrent {racing_hash}")
@@ -237,13 +262,27 @@ def handle_telegram_callback_query(config, cq, bot_token):
                 
                 orig_text = message.get("text", "")
                 orig_text_escaped = orig_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-                new_text = f"{orig_text_escaped}\n\n🗑️ <b>Deleted from Race Client</b>"
+                
+                orig_keyboard = message.get("reply_markup", {}).get("inline_keyboard", [])
+                new_keyboard = []
+                for row in orig_keyboard:
+                    new_row = []
+                    for button in row:
+                        if button.get("callback_data") == cq.get("data"):
+                            new_row.append({
+                                "text": "? Removed!",
+                                "callback_data": "ignore"
+                            })
+                        else:
+                            new_row.append(button)
+                    new_keyboard.append(new_row)
+                    
                 call_telegram_api("editMessageText", {
                     "chat_id": chat_id,
                     "message_id": message_id,
-                    "text": new_text,
+                    "text": orig_text_escaped,
                     "parse_mode": "HTML",
-                    "reply_markup": {"inline_keyboard": []}
+                    "reply_markup": {"inline_keyboard": new_keyboard}
                 }, bot_token)
             else:
                 call_telegram_api("answerCallbackQuery", {
