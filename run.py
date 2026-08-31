@@ -3,11 +3,55 @@ import sys
 import time
 import signal
 import os
+import argparse
+import shutil
+from utils.config import load_config
 
 def main():
+    parser = argparse.ArgumentParser(description="Race Client Sync Automation")
+    parser.add_argument("--fresh", "--reset", action="store_true", help="Clear the data and watch_dir folders for a fresh start")
+    args = parser.parse_args()
+
     if not os.path.exists("config.toml"):
         print("Error: config.toml not found! Please copy sample-config.toml to config.toml and configure it.")
         sys.exit(1)
+
+    config = load_config()
+    
+    if args.fresh:
+        print("Performing fresh start: clearing state and watch directories...")
+        if os.path.exists("data"):
+            try:
+                shutil.rmtree("data")
+                print(" -> Cleared data directory.")
+            except Exception as e:
+                print(f" -> Failed to clear data directory: {e}")
+                
+        watch_dir = config.get("paths", {}).get("watch_dir")
+        completed_dir = config.get("paths", {}).get("completed_dir")
+        if not completed_dir and watch_dir:
+            completed_dir = os.path.join(watch_dir, "completed")
+            
+        if watch_dir and os.path.exists(watch_dir):
+            try:
+                for filename in os.listdir(watch_dir):
+                    file_path = os.path.join(watch_dir, filename)
+                    
+                    if completed_dir and os.path.abspath(file_path) == os.path.abspath(completed_dir):
+                        continue
+                        
+                    try:
+                        if os.path.isfile(file_path) or os.path.islink(file_path):
+                            os.unlink(file_path)
+                        elif os.path.isdir(file_path):
+                            shutil.rmtree(file_path)
+                    except Exception as e:
+                        print(f" -> Failed to delete {file_path}. Reason: {e}")
+                print(f" -> Cleared watch directory ({watch_dir}).")
+            except Exception as e:
+                print(f" -> Failed to clear watch directory: {e}")
+        print("Fresh start complete. Booting up...")
+        print("")
 
     print("Starting qBittorrent FUSE and Racing Sync Automation...")
 
