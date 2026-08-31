@@ -12,7 +12,7 @@ import re
 
 import clients
 from utils.config import load_config
-from utils.state import load_json_state, save_json_state, get_tracker_mapping, remove_tracker_mapping, MAPPINGS_PATH
+from utils.state import load_json_state, save_json_state
 import hashlib
 from utils.torrent import get_torrent_details, bdecode, bencode
 from services.prowlarr import get_prowlarr_indexer_id, search_prowlarr, download_torrent_bytes
