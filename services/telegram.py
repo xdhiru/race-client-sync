@@ -153,7 +153,7 @@ def send_already_seeding_notification(config, name, size, tracker, racing_hashes
         "parse_mode": "HTML"
     }
     
-    if racing_hash or info_hash:
+    if racing_hashes or info_hash:
         keyboard = build_racing_keyboard(config, racing_hashes, public_hash=info_hash)
         if keyboard:
             payload["reply_markup"] = keyboard
@@ -243,7 +243,7 @@ def update_telegram_status(config, job, info_hash, racing_hashes=None):
         "parse_mode": "HTML"
     }
     
-    if racing_hash or info_hash:
+    if racing_hashes or info_hash:
         keyboard = build_racing_keyboard(config, racing_hashes, public_hash=info_hash)
         if keyboard:
             payload["reply_markup"] = keyboard
