@@ -17,7 +17,7 @@ def clean_search_query(name):
 
 import clients
 from utils.config import load_config
-from utils.state import load_json_state, save_json_state, register_tracker_mapping
+from utils.state import load_json_state, save_json_state
 from utils.torrent import get_torrent_file_structure, bdecode, bencode
 from services.prowlarr import get_prowlarr_indexer_id, search_prowlarr, download_torrent_bytes
 from services.telegram import send_telegram_notification, format_size
@@ -280,7 +280,6 @@ def main():
                         with open(dest_path, "wb") as f_out:
                             f_out.write(torrent_bytes)
                         logger.info(f"Successfully saved exported .torrent file: {dest_path}")
-                        register_tracker_mapping(matched_local_hash, info_hash)
                     except Exception as export_err:
                         logger.warning(f"Failed to export .torrent from racing client ({export_err}). Falling back to magnet link generation.")
                         import urllib.parse
@@ -293,7 +292,6 @@ def main():
                             with open(magnet_path, "w", encoding="utf-8") as f_out:
                                 f_out.write(magnet_link)
                             logger.info(f"Successfully saved magnet file fallback: {magnet_path}")
-                            register_tracker_mapping(matched_local_hash, info_hash)
                         except Exception as write_err:
                             logger.error(f"Failed to write magnet file fallback {magnet_path}: {write_err}")
                             
@@ -403,7 +401,6 @@ def main():
                                 f_out.write(torrent_bytes)
                             logger.info(f"Successfully matched and saved torrent file: {dest_path}")
                             
-                            register_tracker_mapping(matched_local_hash.lower(), info_hash)
                             
                             # send_telegram_notification(
                             #     config,

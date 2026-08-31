@@ -133,7 +133,7 @@ def build_racing_keyboard(config, racing_hash, public_hash=None):
         return {"inline_keyboard": buttons}
     return None
 
-def send_already_seeding_notification(config, name, size, tracker, racing_hash=None, info_hash=None):
+def send_already_seeding_notification(config, name, size, tracker, racing_hashes=None, info_hash=None):
     tg_config = config.get("telegram", {})
     if not tg_config.get("enabled", False):
         return
@@ -154,7 +154,7 @@ def send_already_seeding_notification(config, name, size, tracker, racing_hash=N
     }
     
     if racing_hash or info_hash:
-        keyboard = build_racing_keyboard(config, racing_hash, public_hash=info_hash)
+        keyboard = build_racing_keyboard(config, racing_hashes, public_hash=info_hash)
         if keyboard:
             payload["reply_markup"] = keyboard
         
@@ -223,7 +223,7 @@ def build_telegram_message_text(job, info_hash):
         
     return text
 
-def update_telegram_status(config, job, info_hash, racing_hash=None):
+def update_telegram_status(config, job, info_hash, racing_hashes=None):
     tg_config = config.get("telegram", {})
     if not tg_config.get("enabled", False):
         return
@@ -244,7 +244,7 @@ def update_telegram_status(config, job, info_hash, racing_hash=None):
     }
     
     if racing_hash or info_hash:
-        keyboard = build_racing_keyboard(config, racing_hash, public_hash=info_hash)
+        keyboard = build_racing_keyboard(config, racing_hashes, public_hash=info_hash)
         if keyboard:
             payload["reply_markup"] = keyboard
             
