@@ -241,6 +241,26 @@ def get_job_remote_paths(config, torrent_name):
         
     return remote_target, remote_save_path
 
+
+def _archive_file_safely(src_file, config):
+    """Archive a file to completed_dir, handling cross-device moves."""
+    try:
+        completed_dir = config["paths"].get("completed_dir")
+        if not completed_dir:
+            watch_dir = config["paths"]["watch_dir"]
+            completed_dir = os.path.join(watch_dir, "completed")
+        os.makedirs(completed_dir, exist_ok=True)
+        dest_file = os.path.join(completed_dir, os.path.basename(src_file))
+        if os.path.exists(dest_file):
+            base, ext = os.path.splitext(dest_file)
+            dest_file = f"{base}_{int(time.time())}{ext}"
+        # Use copy + unlink for cross-device support
+        shutil.copy2(src_file, dest_file)
+        os.unlink(src_file)
+        logger.info(f"Archived {src_file} to {dest_file}.")
+    except Exception as e:
+        logger.error(f"Failed to archive file {src_file}: {e}")
+
 # ==============================================================================
 # Main Process Loop
 # ==============================================================================
@@ -427,14 +447,14 @@ def process_state_machine(config, state, client):
                                     completed_dir = config["paths"].get("completed_dir")
                                     if not completed_dir:
                                         watch_dir = config["paths"]["watch_dir"]
-                                        completed_dir = os.path.join(watch_dir, "completed")
-                                    os.makedirs(completed_dir, exist_ok=True)
-                                    dest_file = os.path.join(completed_dir, os.path.basename(job["torrent_file"]))
-                                    if os.path.exists(dest_file):
-                                        base, ext = os.path.splitext(dest_file)
-                                        dest_file = f"{base}_{int(time.time())}{ext}"
-                                    if os.path.exists(job["torrent_file"]):
-                                        shutil.move(job["torrent_file"], dest_file)
+completed_dir = os.path.join(watch_dir, "completed")
+                            os.makedirs(completed_dir, exist_ok=True)
+                            dest_file = os.path.join(completed_dir, os.path.basename(job["torrent_file"]))
+                            if os.path.exists(dest_file):
+                                base, ext = os.path.splitext(dest_file)
+                                dest_file = f"{base}_{int(time.time())}{ext}"
+                            if os.path.exists(job["torrent_file"]):
+                                _archive_file_safely(job["torrent_file"], config)
                                         
                                     torrent_bytes = client.export_torrent(info_hash)
                                     client.delete_torrent(info_hash, delete_files=False)
@@ -736,15 +756,15 @@ def process_state_machine(config, state, client):
                         watch_dir = config["paths"]["watch_dir"]
                         completed_dir = os.path.join(watch_dir, "completed")
                     
-                    try:
+try:
                         os.makedirs(completed_dir, exist_ok=True)
                         dest_file = os.path.join(completed_dir, os.path.basename(job["torrent_file"]))
                         
                         if os.path.exists(dest_file):
                             base, ext = os.path.splitext(dest_file)
                             dest_file = f"{base}_{int(time.time())}{ext}"
-                            
-                        shutil.move(job["torrent_file"], dest_file)
+                        
+                        _archive_file_safely(job["torrent_file"], config)
                         logger.info(f"Moved {job['torrent_file']} to {dest_file}")
                     except Exception as e:
                         logger.error(f"Failed to archive torrent file {job['torrent_file']}: {e}")
@@ -852,6 +872,8 @@ def main():
                     parsed_name = urllib.parse.unquote(name_match.group(1)) if name_match else os.path.splitext(os.path.basename(magnet_file))[0]
                     
                     if info_hash in state["active_jobs"]:
+                        # Archive the magnet file since we're already tracking this hash
+                        _archive_file_safely(magnet_file, config)
                         continue
                         
                     logger.info(f"Adding magnet link for {parsed_name} (Hash: {info_hash}) to client.")
@@ -960,7 +982,7 @@ def main():
                             if os.path.exists(dest_file):
                                 base, ext = os.path.splitext(dest_file)
                                 dest_file = f"{base}_{int(time.time())}{ext}"
-                            shutil.move(torrent_file, dest_file)
+                            _archive_file_safely(torrent_file, config)
                             logger.info(f"Torrent {details['name']} is already seeding from remote path ({save_path}). Archived .torrent to {dest_file}.")
                         except Exception as e:
                             logger.error(f"Failed to archive completed torrent {torrent_file}: {e}")
@@ -1074,7 +1096,7 @@ def main():
                         if os.path.exists(dest_file):
                             base, ext = os.path.splitext(dest_file)
                             dest_file = f"{base}_{int(time.time())}{ext}"
-                        shutil.move(torrent_file, dest_file)
+                        _archive_file_safely(torrent_file, config)
                         logger.info(f"Archived .torrent to {dest_file}.")
                     except Exception as e:
                         logger.error(f"Failed to archive completed torrent {torrent_file}: {e}")
