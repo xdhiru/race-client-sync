@@ -6,6 +6,7 @@ import os
 import argparse
 import shutil
 from utils.config import load_config
+from services.telegram import send_telegram_notification
 
 def main():
     parser = argparse.ArgumentParser(description="Race Client Sync Automation")
@@ -52,6 +53,13 @@ def main():
                 print(f" -> Failed to clear watch directory: {e}")
         print("Fresh start complete. Booting up...")
         print("")
+        
+    command_str = " ".join(sys.argv)
+    send_telegram_notification(
+        config,
+        "chat_id",
+        f"?? <b>Race Client Sync Started</b>\nCommand: <code>python {command_str}</code>"
+    )
 
     print("Starting qBittorrent FUSE and Racing Sync Automation...")
 
