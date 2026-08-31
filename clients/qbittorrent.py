@@ -1,6 +1,15 @@
 import logging
+import os
 import qbittorrentapi
-from .base import BaseTorrentClient
+from .base import BaseTorrentClient, AddTorrentResult
+
+
+def is_same_or_parent_path(parent, child):
+    if not parent or not child:
+        return False
+    p = os.path.normpath(parent).lower().rstrip(os.path.sep)
+    c = os.path.normpath(child).lower().rstrip(os.path.sep)
+    return c == p or c.startswith(p + os.path.sep)
 
 logger = logging.getLogger(__name__)
 
@@ -84,9 +93,38 @@ class QBittorrentClient(BaseTorrentClient):
             logger.error(f"Failed to fetch file list for torrent {torrent_hash} from qBittorrent: {e}")
             return []
 
-    def add_torrent(self, torrent_bytes, save_path: str, category: str = None, is_skip_checking: bool = False, paused: bool = False) -> bool:
+    def add_torrent(self, torrent_bytes, save_path: str, category: str = None, is_skip_checking: bool = False, paused: bool = False) -> AddTorrentResult:
         if not self.client:
-            return False
+            return AddTorrentResult.FAILED
+
+        target_hash = None
+        if isinstance(torrent_bytes, str) and torrent_bytes.startswith("magnet:"):
+            import re as _re
+            m = _re.search(r'xt=urn:btih:([a-fA-F0-9]{32,40})', torrent_bytes)
+            if m:
+                target_hash = m.group(1).lower()
+        elif isinstance(torrent_bytes, (bytes, bytearray)):
+            try:
+                from utils.torrent import bdecode, bencode
+                import hashlib
+                decoded = bdecode(bytes(torrent_bytes))
+                target_hash = hashlib.sha1(bencode(decoded[b'info'])).hexdigest().lower()
+            except Exception:
+                pass
+
+        if target_hash:
+            try:
+                existing_path = self.get_torrent_save_path(target_hash)
+                if existing_path:
+                    if is_same_or_parent_path(save_path, existing_path):
+                        logger.info(f"Torrent {target_hash} already exists at expected path {existing_path}.")
+                        return AddTorrentResult.EXISTS_CORRECT
+                    else:
+                        logger.info(f"Torrent {target_hash} exists but at wrong path {existing_path} (expected {save_path}).")
+                        return AddTorrentResult.EXISTS_WRONG
+            except Exception:
+                pass
+
         try:
             import os
             if isinstance(torrent_bytes, str) and torrent_bytes.endswith(".magnet") and os.path.exists(torrent_bytes):
@@ -112,13 +150,43 @@ class QBittorrentClient(BaseTorrentClient):
                     is_skip_checking=is_skip_checking,
                     paused=paused
                 )
-            return True
+            return AddTorrentResult.ADDED
         except Exception as e:
             err_msg_lower = str(e).lower()
             if "conflict" in err_msg_lower or "409" in err_msg_lower or "torrent hash" in err_msg_lower or "already exist" in err_msg_lower:
-                logger.info(f"Torrent already exists in qBittorrent: {e}")
-                return True
+                logger.info(f"Torrent already exists in qBittorrent (race-detected via 409): {e}")
+                if target_hash:
+                    try:
+                        existing_path = self.get_torrent_save_path(target_hash)
+                        if existing_path and is_same_or_parent_path(save_path, existing_path):
+                            return AddTorrentResult.EXISTS_CORRECT
+                        if existing_path:
+                            return AddTorrentResult.EXISTS_WRONG
+                    except Exception:
+                        pass
+                return AddTorrentResult.EXISTS_CORRECT
             logger.error(f"Failed to add torrent to qBittorrent: {e}")
+            return AddTorrentResult.FAILED
+
+    def get_torrent_save_path(self, torrent_hash: str) -> str:
+        if not self.client:
+            return ""
+        try:
+            torrents = self.client.torrents_info(torrent_hashes=torrent_hash)
+            if torrents:
+                return (torrents[0].save_path or "")
+        except Exception as e:
+            logger.error(f"Failed to fetch save_path for {torrent_hash}: {e}")
+        return ""
+
+    def set_location(self, torrent_hash: str, location: str) -> bool:
+        if not self.client:
+            return False
+        try:
+            self.client.torrents_set_location(location=location, torrent_hashes=torrent_hash)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to set location for {torrent_hash} to {location}: {e}")
             return False
 
     def delete_torrent(self, torrent_hash: str, delete_files: bool = False) -> bool:

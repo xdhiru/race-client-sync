@@ -1,3 +1,12 @@
+from enum import Enum
+
+class AddTorrentResult(Enum):
+    """Tristate return for add_torrent so callers can disambiguate."""
+    ADDED = "added"
+    EXISTS_CORRECT = "exists_correct"
+    EXISTS_WRONG = "exists_wrong"
+    FAILED = "failed"
+
 class BaseTorrentClient:
     """
     Abstract Base Class representing a standardized Torrent Client.
@@ -57,7 +66,7 @@ class BaseTorrentClient:
         """
         raise NotImplementedError
 
-    def add_torrent(self, torrent_bytes, save_path: str, category: str = None, is_skip_checking: bool = False, paused: bool = False) -> bool:
+    def add_torrent(self, torrent_bytes, save_path: str, category: str = None, is_skip_checking: bool = False, paused: bool = False) -> "AddTorrentResult":
         """
         Adds a new torrent from raw bencoded .torrent bytes.
         Args:
@@ -66,7 +75,19 @@ class BaseTorrentClient:
             category (str, optional): Target category or label.
             is_skip_checking (bool, optional): Skip hash checking on add.
         Returns:
-            bool: True if successful, False otherwise.
+            AddTorrentResult: ADDED, EXISTS_CORRECT, EXISTS_WRONG, or FAILED.
+        """
+        raise NotImplementedError
+
+    def get_torrent_save_path(self, torrent_hash: str) -> str:
+        """
+        Returns the current save_path of a torrent. Empty string if unknown.
+        """
+        raise NotImplementedError
+
+    def set_location(self, torrent_hash: str, location: str) -> bool:
+        """
+        Moves a torrent's storage location (used to recover from EXISTS_WRONG).
         """
         raise NotImplementedError
 
