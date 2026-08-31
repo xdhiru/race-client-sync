@@ -273,31 +273,17 @@ def main():
                     matched_local_hash = public_match["hash"].lower()
                     logger.info(f"Found public matching torrent in racing client: '{public_match['name']}' (Hash: {matched_local_hash})")
                     
-                    dest_path = os.path.join(watch_dir, f"{matched_local_hash}.torrent")
                     try:
                         logger.info(f"Exporting public .torrent file from racing client via SCP/API for hash {matched_local_hash}")
                         torrent_bytes = client.export_torrent(matched_local_hash)
                         with open(dest_path, "wb") as f_out:
                             f_out.write(torrent_bytes)
                         logger.info(f"Successfully saved exported .torrent file: {dest_path}")
+                        processed_hashes[info_hash] = "completed"
+                        active_searches.pop(info_hash, None)
+                        save_state(state)
                     except Exception as export_err:
-                        logger.warning(f"Failed to export .torrent from racing client ({export_err}). Falling back to magnet link generation.")
-                        import urllib.parse
-                        magnet_link = f"magnet:?xt=urn:btih:{matched_local_hash}&dn={urllib.parse.quote(public_match['name'])}"
-                        for tr in public_match.get("trackers", []):
-                            magnet_link += f"&tr={urllib.parse.quote(tr)}"
-                            
-                        magnet_path = os.path.join(watch_dir, f"{matched_local_hash}.magnet")
-                        try:
-                            with open(magnet_path, "w", encoding="utf-8") as f_out:
-                                f_out.write(magnet_link)
-                            logger.info(f"Successfully saved magnet file fallback: {magnet_path}")
-                        except Exception as write_err:
-                            logger.error(f"Failed to write magnet file fallback {magnet_path}: {write_err}")
-                            
-                    processed_hashes[info_hash] = "completed"
-                    active_searches.pop(info_hash, None)
-                    save_state(state)
+                        logger.error(f"Failed to export .torrent from racing client for {matched_local_hash}: {export_err}")
                     continue
 
                 if info_hash not in active_searches:

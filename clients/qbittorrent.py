@@ -98,16 +98,23 @@ class QBittorrentClient(BaseTorrentClient):
             return AddTorrentResult.FAILED
 
         target_hash = None
-        if isinstance(torrent_bytes, str) and torrent_bytes.startswith("magnet:"):
-            import re as _re
-            m = _re.search(r'xt=urn:btih:([a-fA-F0-9]{32,40})', torrent_bytes)
-            if m:
-                target_hash = m.group(1).lower()
-        elif isinstance(torrent_bytes, (bytes, bytearray)):
+        raw_bytes = None
+
+        if isinstance(torrent_bytes, (bytes, bytearray)):
+            raw_bytes = bytes(torrent_bytes)
+        elif isinstance(torrent_bytes, str):
+            if os.path.exists(torrent_bytes):
+                try:
+                    with open(torrent_bytes, "rb") as f:
+                        raw_bytes = f.read()
+                except Exception as e:
+                    logger.error(f"Failed to read torrent file {torrent_bytes}: {e}")
+
+        if raw_bytes:
             try:
                 from utils.torrent import bdecode, bencode
                 import hashlib
-                decoded = bdecode(bytes(torrent_bytes))
+                decoded = bdecode(raw_bytes)
                 target_hash = hashlib.sha1(bencode(decoded[b'info'])).hexdigest().lower()
             except Exception:
                 pass
@@ -126,15 +133,7 @@ class QBittorrentClient(BaseTorrentClient):
                 pass
 
         try:
-            import os
-            if isinstance(torrent_bytes, str) and torrent_bytes.endswith(".magnet") and os.path.exists(torrent_bytes):
-                try:
-                    with open(torrent_bytes, "r", encoding="utf-8") as f:
-                        torrent_bytes = f.read().strip()
-                except Exception as e:
-                    logger.error(f"Failed to read magnet link from file {torrent_bytes}: {e}")
-
-            if isinstance(torrent_bytes, str) and (torrent_bytes.startswith("magnet:") or torrent_bytes.startswith("http")):
+            if isinstance(torrent_bytes, str) and torrent_bytes.startswith("http"):
                 self.client.torrents_add(
                     urls=torrent_bytes,
                     save_path=save_path,
@@ -143,8 +142,9 @@ class QBittorrentClient(BaseTorrentClient):
                     paused=paused
                 )
             else:
+                payload = raw_bytes if raw_bytes else torrent_bytes
                 self.client.torrents_add(
-                    torrent_files=torrent_bytes,
+                    torrent_files=payload,
                     save_path=save_path,
                     category=category,
                     is_skip_checking=is_skip_checking,

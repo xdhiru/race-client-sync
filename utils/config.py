@@ -31,8 +31,8 @@ def load_config():
         logger.error(f"Configuration file {CONFIG_PATH} not found!")
         sys.exit(1)
     try:
-        with open(CONFIG_PATH, "rb") as f:
-            return tomllib.load(f)
+        with open(CONFIG_PATH, "r", encoding="utf-8-sig") as f:
+            return tomllib.loads(f.read())
     except Exception as e:
         logger.error(f"Failed to parse configuration file {CONFIG_PATH}: {e}")
         sys.exit(1)

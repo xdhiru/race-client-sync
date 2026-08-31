@@ -47,8 +47,23 @@ def _do_inject(item, racing_client, normal_client, config, p_config, indexer_ids
         category=config["paths"].get("remote_category", "remote"),
         is_skip_checking=True,
     )
-    if add_result.value == "added" or add_result.value.startswith("exists"):
-        if source == "racing":
+    res_val = getattr(add_result, "value", str(add_result))
+    if res_val == "exists_wrong":
+        try:
+            logger.info(f"Injector: {res_hash} exists on SSD. Deleting and re-adding pointing to FUSE with skip check.")
+            normal_client.delete_torrent(res_hash, delete_files=False)
+            add_result = normal_client.add_torrent(
+                torrent_bytes=torrent_bytes,
+                save_path=remote_save_path,
+                category=config["paths"].get("remote_category", "remote"),
+                is_skip_checking=True,
+            )
+            res_val = getattr(add_result, "value", str(add_result))
+        except Exception as e:
+            logger.error(f"Failed to delete and re-add {res_hash} to FUSE: {e}")
+
+    if res_val in ("added", "exists_correct") or (isinstance(add_result, bool) and add_result):
+        if source == "racing" and racing_client:
             try:
                 racing_completed_cat = config.get("racing_settings", {}).get("completed_category", "processed")
                 racing_client.set_category(res_hash, racing_completed_cat)
@@ -57,7 +72,7 @@ def _do_inject(item, racing_client, normal_client, config, p_config, indexer_ids
         logger.info(f"Injected {source} cross-seed {res_hash} for {name}.")
         injected.append(res_hash)
     else:
-        logger.error(f"Failed to inject {source} cross-seed {res_hash} for {name}.")
+        logger.error(f"Failed to inject {source} cross-seed {res_hash} for {name}: result={add_result}")
 
 
 def _inject_for_job(info_hash, details, sorted_files, remote_save_path, config, origin_client):
@@ -67,6 +82,10 @@ def _inject_for_job(info_hash, details, sorted_files, remote_save_path, config, 
         target_file_sizes = _get_torrent_files_sizes(sorted_files)
         name = details.get("name", "?")
         logger.info(f"Injector: scanning for cross-seeds for '{name}'.")
+
+        normal_client = clients.get_client(config.get("qbittorrent"))
+        if not normal_client or not normal_client.connect():
+            normal_client = origin_client
 
         racing_client = None
         try:
@@ -101,7 +120,7 @@ def _inject_for_job(info_hash, details, sorted_files, remote_save_path, config, 
                             continue
                         _do_inject(
                             (rt.get("name", ""), "racing", torrent_bytes, rt_hash),
-                            racing_client, origin_client, config, None, None,
+                            racing_client, normal_client, config, None, None,
                             target_total_size, target_file_sizes, info_hash,
                             remote_save_path, injected,
                         )
@@ -123,7 +142,7 @@ def _inject_for_job(info_hash, details, sorted_files, remote_save_path, config, 
                 except Exception as e:
                     logger.error(f"Injector: indexer resolve failed for {idx_name}: {e}")
 
-            sanitized_query = _clean_query(details["name"])
+            sanitized_query = _clean_query(name)
             for idx_name, indexer_id in indexer_ids.items():
                 try:
                     results = search_prowlarr(prowlarr_url, prowlarr_api_key, indexer_id, sanitized_query)
@@ -132,7 +151,7 @@ def _inject_for_job(info_hash, details, sorted_files, remote_save_path, config, 
                     continue
                 for res in results:
                     res_hash = (res.get("infoHash") or "").lower()
-                    if not res_hash or res_hash in injected or res_hash == info_hash.lower():
+                    if res_hash and (res_hash in injected or res_hash == info_hash.lower()):
                         continue
                     download_url = res.get("downloadUrl")
                     if not download_url:
@@ -152,9 +171,11 @@ def _inject_for_job(info_hash, details, sorted_files, remote_save_path, config, 
                                 res_hash = hashlib.sha1(bencode(decoded[b'info'])).hexdigest().lower()
                             except Exception:
                                 continue
+                        if not res_hash or res_hash in injected or res_hash == info_hash.lower():
+                            continue
                         _do_inject(
-                            (details["name"], "prowlarr", torrent_bytes, res_hash),
-                            racing_client, origin_client, config, p_config, indexer_ids,
+                            (name, "prowlarr", torrent_bytes, res_hash),
+                            racing_client, normal_client, config, p_config, indexer_ids,
                             target_total_size, target_file_sizes, info_hash,
                             remote_save_path, injected,
                         )

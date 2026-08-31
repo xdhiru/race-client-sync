@@ -276,6 +276,7 @@ def process_state_machine(config, state, client):
     rclone_threads = globals()["rclone_threads"]
 
     evicted = []
+    any_changed = False
     for info_hash in list(active_jobs.keys()):
         job = active_jobs[info_hash]
         sm = TorrentJobStateMachine(
@@ -286,14 +287,16 @@ def process_state_machine(config, state, client):
             rclone_status=rclone_status,
             rclone_threads=rclone_threads,
         )
-        sm.tick(torrents_by_hash)
+        res = sm.tick(torrents_by_hash)
+        if res in (Transition.ADVANCED, Transition.COMPLETED, Transition.FAILED):
+            any_changed = True
         if job.get("_evict"):
             evicted.append(info_hash)
 
     for h in evicted:
         active_jobs.pop(h, None)
         logger.info(f"Evicted completed/failed job {h}")
-    if evicted:
+    if evicted or any_changed:
         save_state(state)
 
 
@@ -356,46 +359,7 @@ def main():
                     os.makedirs(watch_dir, exist_ok=True)
 
                 torrent_files = sorted(glob.glob(os.path.join(watch_dir, "*.torrent")))
-                magnet_files = sorted(glob.glob(os.path.join(watch_dir, "*.magnet")))
                 active_paths = {job["torrent_file"] for job in state["active_jobs"].values()}
-
-                # Process magnet files
-                candidate_magnets = [f for f in magnet_files if f not in active_paths]
-                for magnet_file in candidate_magnets:
-                    try:
-                        with open(magnet_file, "r", encoding="utf-8") as f_mag:
-                            magnet_link = f_mag.read().strip()
-                        info_hash_match = re.search(r'xt=urn:btih:([a-fA-F0-9]{32,40})', magnet_link)
-                        if not info_hash_match:
-                            logger.error(f"Failed to parse infohash from magnet file {magnet_file}")
-                            continue
-                        info_hash = info_hash_match.group(1).lower()
-                        name_match = re.search(r'dn=([^&]+)', magnet_link)
-                        parsed_name = urllib.parse.unquote(name_match.group(1)) if name_match else os.path.splitext(os.path.basename(magnet_file))[0]
-                        if info_hash in state["active_jobs"]:
-                            continue
-                        logger.info(f"Adding magnet link for {parsed_name} (Hash: {info_hash}) to client.")
-                        client.add_torrent(
-                            torrent_bytes=magnet_link,
-                            save_path=config["paths"]["local_save_path"],
-                            category=config["paths"].get("category"),
-                            paused=True,
-                        )
-                        state["active_jobs"][info_hash] = {
-                            "torrent_file": magnet_file,
-                            "name": parsed_name,
-                            "size": 0,
-                            "is_multi_file": False,
-                            "tracker": "Public",
-                            "state": "added_local",
-                            "added_time": time.time(),
-                            "completion_time": None,
-                            "priorities_configured": False,
-                            "is_magnet": True,
-                        }
-                        save_state(state)
-                    except Exception as e:
-                        logger.error(f"Failed to process magnet file {magnet_file}: {e}")
 
                 candidate_files = [f for f in torrent_files if f not in active_paths]
                 if candidate_files:
@@ -430,17 +394,39 @@ def main():
                     except Exception as e:
                         logger.warning(f"Error checking if torrent exists in client: {e}")
 
+                    _, remote_save_path = get_job_remote_paths(config, details["name"])
+                    fuse_target = os.path.join(remote_save_path, details["name"])
+                    fuse_exists = os.path.exists(fuse_target)
+
                     if exists_in_qb:
-                        remote_save_path = config["paths"]["remote_save_path"]
                         save_path = existing_torrent_info.get("save_path", "")
-                        if is_same_or_parent_path(remote_save_path, save_path):
+                        if is_same_or_parent_path(remote_save_path, save_path) or fuse_exists:
+                            if not is_same_or_parent_path(remote_save_path, save_path):
+                                logger.info(f"Torrent {details['name']} exists in client on SSD, but files are already on FUSE ({fuse_target}). Deleting from client and re-adding pointing to FUSE with skip check.")
+                                client.delete_torrent(info_hash, delete_files=False)
+                                local_path = os.path.join(config["paths"]["local_save_path"], details["name"])
+                                if os.path.exists(local_path):
+                                    try:
+                                        if os.path.isdir(local_path):
+                                            shutil.rmtree(local_path)
+                                        else:
+                                            os.remove(local_path)
+                                        logger.info(f"Cleaned up local SSD path: {local_path}")
+                                    except Exception as e:
+                                        logger.error(f"Failed to clean up local path {local_path}: {e}")
+                                client.add_torrent(
+                                    torrent_bytes=torrent_file,
+                                    save_path=remote_save_path,
+                                    category=config["paths"].get("remote_category", "remote"),
+                                    is_skip_checking=True,
+                                    paused=False,
+                                )
                             try:
                                 _archive_file_safely(torrent_file, config)
-                                logger.info(f"Torrent {details['name']} is already seeding from remote path ({save_path}). Archived.")
+                                logger.info(f"Torrent {details['name']} is already seeding from remote path ({remote_save_path}). Archived.")
                             except Exception as e:
                                 logger.error(f"Failed to archive completed torrent {torrent_file}: {e}")
 
-                            _, remote_save_path = get_job_remote_paths(config, details["name"])
                             racing_injector.enqueue_injection(
                                 info_hash=info_hash,
                                 details=details,
@@ -500,9 +486,7 @@ def main():
                             logger.error(f"Failed to re-associate torrent {details['name']}: {e}")
                             continue
 
-                    _, remote_save_path = get_job_remote_paths(config, details["name"])
-                    fuse_target = os.path.join(remote_save_path, details["name"])
-                    if os.path.exists(fuse_target):
+                    if fuse_exists:
                         logger.info(f"Torrent {details['name']} already exists on FUSE mount ({fuse_target}). Adding to client in remote seeding state.")
                         add_result = client.add_torrent(
                             torrent_bytes=torrent_file,
@@ -515,10 +499,17 @@ def main():
                             logger.error(f"Failed to add existing FUSE torrent {details['name']} to client.")
                             continue
                         if add_result == AddTorrentResult.EXISTS_WRONG:
-                            if client.set_location(info_hash, remote_save_path):
-                                logger.info(f"Relocated existing torrent {info_hash} to {remote_save_path}.")
-                            else:
-                                logger.warning(f"EXISTS_WRONG and set_location failed for {info_hash}; skipping.")
+                            logger.info(f"Torrent {info_hash} exists on SSD path. Deleting from client and re-adding pointing to FUSE with skip check.")
+                            client.delete_torrent(info_hash, delete_files=False)
+                            add_result = client.add_torrent(
+                                torrent_bytes=torrent_file,
+                                save_path=remote_save_path,
+                                category=config["paths"].get("remote_category", "remote"),
+                                is_skip_checking=True,
+                                paused=True,
+                            )
+                            if add_result == AddTorrentResult.FAILED:
+                                logger.error(f"Failed to re-add existing FUSE torrent {details['name']} to client after removal.")
                                 continue
 
                         try:

@@ -8,8 +8,8 @@ from services.telegram import update_telegram_status, send_already_seeding_notif
 
 logger = logging.getLogger(__name__)
 
-_DEBOUNCE_SECONDS = 5.0
-_QUEUE_WAIT_TIMEOUT = 1.0
+_DEBOUNCE_SECONDS = 3.0
+_QUEUE_WAIT_TIMEOUT = 0.5
 
 _queue = None
 _worker_thread = None
@@ -35,27 +35,23 @@ def _dispatcher_loop():
     while not _stop_event.is_set():
         config = _safe_load_config()
         if config is None:
-            time.sleep(2.0)
+            time.sleep(1.0)
             continue
 
-        drained_any = False
+        # 1. Process immediate priority events
         try:
             while True:
                 item = _queue.get_nowait()
-                drained_any = True
                 kind = item[0]
                 info_hash = item[1]
                 rest = item[2:]
-                with _pending_lock:
-                    _pending_jobs.pop(info_hash, None)
-                    last_sent_at.pop(info_hash, None)
                 try:
-                    if kind == "status":
-                        (job,) = rest
-                        update_telegram_status(config, job, info_hash)
-                    elif kind == "status_with_racing":
+                    if kind == "status_with_racing":
                         job, racing_hashes = rest
+                        with _pending_lock:
+                            _pending_jobs.pop(info_hash, None)
                         update_telegram_status(config, job, info_hash, racing_hashes=racing_hashes)
+                        last_sent_at[info_hash] = time.time()
                     elif kind == "already_seeding":
                         name, size, tracker, racing_hashes = rest
                         send_already_seeding_notification(
@@ -66,15 +62,27 @@ def _dispatcher_loop():
                             racing_hashes=racing_hashes,
                             info_hash=info_hash,
                         )
+                    elif kind == "status_immediate":
+                        (job,) = rest
+                        with _pending_lock:
+                            _pending_jobs.pop(info_hash, None)
+                        update_telegram_status(config, job, info_hash)
+                        last_sent_at[info_hash] = time.time()
                 except Exception as e:
-                    logger.error(f"Telegram dispatcher failed to send {kind} for {info_hash}: {e}")
-        except Empty:
+                    logger.error(f"Telegram dispatcher failed to send immediate {kind} for {info_hash}: {e}")
+        except (Empty, AttributeError):
             pass
 
+        # 2. Process debounced pending status updates
         now = time.time()
+        ready = []
         with _pending_lock:
-            ready = [(h, job) for h, (job, _) in _pending_jobs.items()
-                     if now - last_sent_at.get(h, 0) >= _DEBOUNCE_SECONDS]
+            for h, (job, queued_time) in list(_pending_jobs.items()):
+                # Send if debounced or if it's been waiting longer than DEBOUNCE_SECONDS
+                if now - last_sent_at.get(h, 0) >= _DEBOUNCE_SECONDS:
+                    ready.append((h, dict(job)))
+                    _pending_jobs.pop(h, None)
+
         for h, job in ready:
             try:
                 update_telegram_status(config, job, h)
@@ -82,9 +90,18 @@ def _dispatcher_loop():
             except Exception as e:
                 logger.error(f"Telegram dispatcher debounced send failed for {h}: {e}")
 
-        if drained_any:
-            continue
         _stop_event.wait(_QUEUE_WAIT_TIMEOUT)
+
+    # Flush remaining items on exit
+    config = _safe_load_config()
+    if config:
+        with _pending_lock:
+            for h, (job, _) in _pending_jobs.items():
+                try:
+                    update_telegram_status(config, job, h)
+                except Exception:
+                    pass
+            _pending_jobs.clear()
 
     logger.info("Telegram debounced dispatcher stopped.")
 
@@ -100,7 +117,7 @@ def start():
 
 
 def stop(timeout=5.0):
-    global _worker_thread, _stop_event
+    global _worker_thread, _stop_event, _queue
     if _stop_event is not None:
         _stop_event.set()
     if _worker_thread is not None:
@@ -111,17 +128,23 @@ def stop(timeout=5.0):
 
 
 def enqueue_status(job, info_hash):
-    if _queue is None:
+    if _stop_event is None:
         return
+    state = job.get("state")
+    # If it's a terminal or critical state, send immediately
+    if state in ("completed", "rclone_failed", "add_remote_failed"):
+        if _queue is not None:
+            _queue.put(("status_immediate", info_hash, dict(job)))
+        return
+
     with _pending_lock:
-        _pending_jobs[info_hash] = (job, time.time())
-    _queue.put(("status", info_hash, job))
+        _pending_jobs[info_hash] = (dict(job), time.time())
 
 
 def enqueue_status_with_racing(job, info_hash, racing_hashes):
     if _queue is None:
         return
-    _queue.put(("status_with_racing", info_hash, job, racing_hashes))
+    _queue.put(("status_with_racing", info_hash, dict(job), racing_hashes))
 
 
 def enqueue_already_seeding(info_hash, name, size, tracker, racing_hashes):

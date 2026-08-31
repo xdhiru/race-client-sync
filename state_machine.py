@@ -138,35 +138,6 @@ class TorrentJobStateMachine:
             logger.warning(f"Priority config failed for {self.info_hash}: {e}")
             return False
 
-    def _populate_magnet_metadata(self):
-        """If job came in as a magnet, fetch file list and build batches."""
-        if not self.job.get("is_magnet"):
-            return True
-        try:
-            files = self.client.get_torrent_files(self.info_hash)
-        except Exception as e:
-            logger.info(f"Waiting for magnet metadata ({self.info_hash}): {e}")
-            return False
-        if not files:
-            return False
-        total_size = sum(f.get("size", 0) for f in files)
-        try:
-            t_info = self.client.get_torrents_info()
-            my_t = next((x for x in t_info if x["hash"].lower() == self.info_hash), None)
-            if my_t:
-                self.job["name"] = my_t["name"]
-        except Exception:
-            pass
-        self.job["size"] = total_size
-        self.job["is_multi_file"] = len(files) > 1
-
-        ssd_limit = self.config["settings"].get("ssd_limit_gb", 35.0) * 1024 * 1024 * 1024
-        batches = _build_batches_from_files(files, ssd_limit)
-        self.job["batches"] = batches
-        self.job["current_batch_index"] = 0
-        self.job["is_magnet"] = False
-        return True
-
     def _handle_added_local(self, t):
         if not t:
             tf = self.job.get("torrent_file", "")
@@ -177,9 +148,6 @@ class TorrentJobStateMachine:
                 return Transition.FAILED
             return Transition.WAITING
 
-        if not self._populate_magnet_metadata():
-            return Transition.WAITING
-
         if not self.job.get("priorities_configured") and self.job.get("batches"):
             if not self._ensure_batch_priorities(t):
                 return Transition.WAITING
@@ -188,7 +156,7 @@ class TorrentJobStateMachine:
             total_batches = len(self.job.get("batches", []))
             curr = self.job.get("current_batch_index", 0) + 1
             logger.info(f"{self.job.get('name')} batch {curr}/{total_batches} complete. Cooldown.")
-            return self._set_state("waiting_5min", completion_time=time.time())
+            return self._set_state("waiting_5min", rclone_retries=0, completion_time=time.time())
         return Transition.WAITING
 
     def _handle_waiting_5min(self, t):
@@ -202,7 +170,6 @@ class TorrentJobStateMachine:
             logger.error(f"Failed to delete torrent {self.info_hash} from client: {e}")
         return self._set_state(
             "rclone_moving",
-            rclone_retries=0,
             move_start_time=time.time(),
         )
 
@@ -318,9 +285,29 @@ class TorrentJobStateMachine:
             return self._on_added_remote()
 
         if result == AddTorrentResult.EXISTS_WRONG:
-            if self.client.set_location(self.info_hash, remote_save_path):
+            logger.info(f"Torrent {self.info_hash} exists on SSD path. Deleting from client and re-adding pointing to FUSE with skip check.")
+            self.client.delete_torrent(self.info_hash, delete_files=False)
+            local_dir = self.config.get("paths", {}).get("local_save_path")
+            if local_dir:
+                local_path = os.path.join(local_dir, self.job["name"])
+                if os.path.exists(local_path):
+                    try:
+                        if os.path.isdir(local_path):
+                            shutil.rmtree(local_path)
+                        else:
+                            os.remove(local_path)
+                        logger.info(f"Cleaned up local SSD path: {local_path}")
+                    except Exception as e:
+                        logger.error(f"Failed to clean up local path {local_path}: {e}")
+            result = self.client.add_torrent(
+                torrent_bytes=self.job["torrent_file"],
+                save_path=remote_save_path,
+                category=self.config["paths"].get("remote_category", "remote"),
+                is_skip_checking=True,
+            )
+            if result in (AddTorrentResult.ADDED, AddTorrentResult.EXISTS_CORRECT):
                 return self._on_added_remote()
-            logger.warning(f"EXISTS_WRONG and set_location failed for {self.info_hash}; will retry.")
+            logger.warning(f"EXISTS_WRONG delete & re-add failed for {self.info_hash}; will retry.")
             result = AddTorrentResult.FAILED
 
         if result == AddTorrentResult.ADDED:
@@ -377,7 +364,11 @@ class TorrentJobStateMachine:
             sorted_files = sorted(files, key=lambda x: x["name"])
         except Exception:
             details = self.job
-            sorted_files = []
+            try:
+                files = self.client.get_torrent_files(self.info_hash)
+                sorted_files = sorted(files, key=lambda x: x["name"]) if files else []
+            except Exception:
+                sorted_files = []
 
         try:
             _archive_file_safely(self.job["torrent_file"], self.config)

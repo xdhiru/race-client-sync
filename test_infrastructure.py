@@ -10,8 +10,12 @@ sys.modules.setdefault("qbittorrentapi", MagicMock())
 
 # Create a temp working dir with a valid config.toml so load_config doesn't sys.exit.
 TMPDIR = tempfile.mkdtemp(prefix="race_test_")
-SAMPLE_CONFIG = os.path.join(os.path.dirname(__file__), "test_config.toml")
-shutil.copy(SAMPLE_CONFIG, os.path.join(TMPDIR, "config.toml"))
+sample_path = os.path.join(os.path.dirname(__file__), "sample-config.toml")
+if os.path.exists(sample_path):
+    shutil.copy(sample_path, os.path.join(TMPDIR, "config.toml"))
+else:
+    with open(os.path.join(TMPDIR, "config.toml"), "w", encoding="utf-8") as f:
+        f.write('[settings]\n[paths]\nwatch_dir = "watch"\nlocal_save_path = "local"\nremote_save_path = "remote"\n')
 os.chdir(TMPDIR)
 os.makedirs("data", exist_ok=True)
 sys.path.insert(0, '.')

@@ -84,8 +84,108 @@ def test_added_remote_self_heals():
     print("test_added_remote_self_heals: PASS")
 
 
+def test_rclone_failure_and_retries():
+    job = {
+        "state": "rclone_moving",
+        "name": "test",
+        "size": 100,
+        "torrent_file": "/tmp/x.torrent",
+        "rclone_retries": 0,
+    }
+    cfg = {"settings": {"wait_time_minutes": 0.01}, "paths": {"local_save_path": "/tmp"}, "rclone": {"remote": "remote:", "max_retries": 2}}
+    client = make_mock_client()
+    rclone_status = {"abc": "failed: network timeout"}
+    rclone_threads = {}
+    sm = TorrentJobStateMachine("abc", job, cfg, client, rclone_status, rclone_threads)
+
+    # 1st failure -> waiting_5min with retries=1
+    sm.tick({})
+    assert job["state"] == "waiting_5min"
+    assert job["rclone_retries"] == 1
+
+    # Cooldown expires -> rclone_moving with retries preserved as 1
+    job["completion_time"] = time.time() - 100
+    sm.tick({})
+    assert job["state"] == "rclone_moving"
+    assert job["rclone_retries"] == 1
+
+    # 2nd failure -> waiting_5min with retries=2
+    rclone_status["abc"] = "failed: disk full"
+    sm.tick({})
+    assert job["state"] == "waiting_5min"
+    assert job["rclone_retries"] == 2
+
+    # Cooldown expires -> rclone_moving with retries=2
+    job["completion_time"] = time.time() - 100
+    sm.tick({})
+    assert job["state"] == "rclone_moving"
+    assert job["rclone_retries"] == 2
+
+    # 3rd failure (exceeds max_retries=2) -> rclone_failed
+    rclone_status["abc"] = "failed: quota exceeded"
+    sm.tick({})
+    assert job["state"] == "rclone_failed"
+    print("test_rclone_failure_and_retries: PASS")
+
+
+def test_fuse_wait_retries_and_failure():
+    job = {
+        "state": "fuse_wait",
+        "name": "test",
+        "size": 100,
+        "torrent_file": "/tmp/x.torrent",
+        "move_completed_time": time.time() - 100,
+    }
+    cfg = {"settings": {"fuse_cooldown_seconds": 0.01, "max_readd_retries": 2}, "paths": {"remote_save_path": "/mnt/cloud"}}
+    client = make_mock_client()
+    client.add_torrent.return_value = AddTorrentResult.FAILED
+    sm = TorrentJobStateMachine("abc", job, cfg, client, {}, {})
+
+    # 1st attempt fails -> retry 1
+    sm.tick({})
+    assert job["state"] == "fuse_wait"
+    assert job["readd_retries"] == 1
+
+    # 2nd attempt fails -> retry 2
+    job["move_completed_time"] = time.time() - 100
+    sm.tick({})
+    assert job["state"] == "fuse_wait"
+    assert job["readd_retries"] == 2
+
+    # 3rd attempt fails (exceeds max_readd_retries=2) -> add_remote_failed
+    job["move_completed_time"] = time.time() - 100
+    sm.tick({})
+    assert job["state"] == "add_remote_failed"
+    print("test_fuse_wait_retries_and_failure: PASS")
+
+
+def test_fuse_wait_exists_wrong_deletes_and_readds():
+    job = {
+        "state": "fuse_wait",
+        "name": "test",
+        "size": 100,
+        "torrent_file": "/tmp/x.torrent",
+        "move_completed_time": time.time() - 100,
+    }
+    cfg = {"settings": {"fuse_cooldown_seconds": 0.01}, "paths": {"remote_save_path": "/mnt/cloud"}}
+    client = make_mock_client()
+    # First call returns EXISTS_WRONG, second call (after delete) returns ADDED
+    client.add_torrent.side_effect = [AddTorrentResult.EXISTS_WRONG, AddTorrentResult.ADDED]
+    sm = TorrentJobStateMachine("abc", job, cfg, client, {}, {})
+
+    result = sm.tick({})
+    assert result == Transition.ADVANCED
+    assert job["state"] == "added_remote"
+    assert client.delete_torrent.called
+    assert client.add_torrent.call_count == 2
+    print("test_fuse_wait_exists_wrong_deletes_and_readds: PASS")
+
+
 if __name__ == "__main__":
     test_added_local_completes()
     test_waiting_5min_transitions_to_rclone()
     test_added_remote_self_heals()
+    test_rclone_failure_and_retries()
+    test_fuse_wait_retries_and_failure()
+    test_fuse_wait_exists_wrong_deletes_and_readds()
     print("All state machine smoke tests PASSED")
