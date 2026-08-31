@@ -990,7 +990,11 @@ def main():
                               racing_hash=racing_hash,
                               info_hash=info_hash
                           )
-                        continue
+                        # SYNCHRONOUS INJECTION: Inject any pending racing torrents right now
+                          remote_save_path_cfg = config["paths"]["remote_save_path"]
+                          inject_racing_torrents(info_hash, remote_save_path_cfg, config, client)
+                          
+                          continue
                         
                     logger.info(f"Torrent {details['name']} already exists locally in client. Re-associating with state tracking.")
                     
