@@ -57,16 +57,16 @@ def send_telegram_notification(config, chat_id_key, text, reply_markup=None):
         payload["reply_markup"] = reply_markup
     call_telegram_api("sendMessage", payload, bot_token)
 
-def build_racing_keyboard(config, racing_hash):
-    if not racing_hash:
-        return None
-        
-    if isinstance(racing_hash, str):
-        racing_hashes = [racing_hash]
-    elif isinstance(racing_hash, list):
-        racing_hashes = racing_hash
-    else:
-        racing_hashes = []
+def build_racing_keyboard(config, racing_hash, public_hash=None):
+    racing_hashes = []
+    if racing_hash:
+        if isinstance(racing_hash, str):
+            racing_hashes = [racing_hash]
+        elif isinstance(racing_hash, list):
+            racing_hashes = list(racing_hash)  # Copy list
+            
+    if public_hash and public_hash not in racing_hashes:
+        racing_hashes.append(public_hash)
         
     if not racing_hashes:
         return None
@@ -81,15 +81,22 @@ def build_racing_keyboard(config, racing_hash):
         logger.error(f"Failed to fetch racing client info for Telegram buttons: {e}")
         
     buttons = []
+    actual_racing_hashes = []
     for rh in racing_hashes:
         domain = ""
+        found = False
         for t in racing_torrents:
             if t["hash"] == rh:
+                found = True
                 trackers = t.get("trackers", [])
                 if trackers:
                     domain = trackers[0].replace("https://", "").replace("http://", "").split("/")[0]
                 break
-        
+                
+        if not found:
+            continue
+            
+        actual_racing_hashes.append(rh)
         button_text = f"Delete {domain} ({rh[:6]})" if domain else f"Delete {rh[:6]}"
         buttons.append([
             {
@@ -98,7 +105,7 @@ def build_racing_keyboard(config, racing_hash):
             }
         ])
         
-    if len(racing_hashes) > 1:
+    if len(actual_racing_hashes) > 1:
         buttons.append([
             {
                 "text": "??? Remove All from Race Client",
@@ -130,8 +137,8 @@ def send_already_seeding_notification(config, name, size, tracker, racing_hash=N
         "parse_mode": "HTML"
     }
     
-    if racing_hash:
-        keyboard = build_racing_keyboard(config, racing_hash)
+    if racing_hash or info_hash:
+        keyboard = build_racing_keyboard(config, racing_hash, public_hash=info_hash)
         if keyboard:
             payload["reply_markup"] = keyboard
         
@@ -220,8 +227,8 @@ def update_telegram_status(config, job, info_hash, racing_hash=None):
         "parse_mode": "HTML"
     }
     
-    if racing_hash:
-        keyboard = build_racing_keyboard(config, racing_hash)
+    if racing_hash or info_hash:
+        keyboard = build_racing_keyboard(config, racing_hash, public_hash=info_hash)
         if keyboard:
             payload["reply_markup"] = keyboard
             
@@ -314,7 +321,7 @@ def handle_telegram_callback_query(config, cq, bot_token):
                         cb = button.get("callback_data", "")
                         if cb in [f"del_race:{h}" for h in hashes_to_delete]:
                             new_row.append({
-                                "text": "? Removed!",
+                                "text": button.get("text", "").replace("Delete ", "? Removed "),
                                 "callback_data": "ignore"
                             })
                         elif cb == "del_all":

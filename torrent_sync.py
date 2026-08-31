@@ -1097,7 +1097,8 @@ def main():
                         name=details["name"],
                         size=details["size"],
                         tracker=details.get("tracker", "Unknown"),
-                        racing_hash=racing_hash
+                        racing_hash=racing_hash,
+                        info_hash=info_hash
                     )
                     save_state(state)
                     
