@@ -112,6 +112,14 @@ def send_already_seeding_notification(config, name, size, tracker, racing_hash=N
                 }
             ])
             
+        if len(racing_hashes) > 1:
+            buttons.append([
+                {
+                    "text": "??? Remove All from Race Client",
+                    "callback_data": "del_all"
+                }
+            ])
+            
         if buttons:
             payload["reply_markup"] = {
                 "inline_keyboard": buttons
@@ -231,12 +239,33 @@ def handle_telegram_callback_query(config, cq, bot_token):
         }, bot_token)
         return
         
-    if data.startswith("del_race:"):
-        racing_hash = data.split("del_race:", 1)[1]
-        logger.info(f"Telegram callback received: request to delete racing torrent {racing_hash}")
+    if data.startswith("del_race:") or data == "del_all":
+        logger.info(f"Telegram callback received: request to delete racing torrent(s) via {data}")
+        
+        orig_keyboard = message.get("reply_markup", {}).get("inline_keyboard", [])
+        
+        hashes_to_delete = []
+        if data == "del_all":
+            for row in orig_keyboard:
+                for button in row:
+                    cb = button.get("callback_data", "")
+                    if cb.startswith("del_race:"):
+                        hashes_to_delete.append(cb.split("del_race:", 1)[1])
+        else:
+            hashes_to_delete = [data.split("del_race:", 1)[1]]
+            
+        active_trackers = 0
+        for row in orig_keyboard:
+            for button in row:
+                cb = button.get("callback_data", "")
+                if cb.startswith("del_race:"):
+                    active_trackers += 1
+                    
+        should_delete_files = (active_trackers <= 1) or (data == "del_all")
         
         racing_client = None
         try:
+            import clients
             racing_client = clients.get_client(config.get("racing_client"))
             if racing_client and not racing_client.connect():
                 racing_client = None
@@ -246,33 +275,45 @@ def handle_telegram_callback_query(config, cq, bot_token):
         if not racing_client:
             call_telegram_api("answerCallbackQuery", {
                 "callback_query_id": callback_id,
-                "text": "❌ Could not connect to race client.",
+                "text": "? Could not connect to race client.",
                 "show_alert": True
             }, bot_token)
             return
             
         try:
-            success = racing_client.delete_torrent(racing_hash, delete_files=True)
-            if success:
-                logger.info(f"Successfully deleted torrent {racing_hash} from race client via Telegram button.")
+            success_count = 0
+            for rh in hashes_to_delete:
+                if racing_client.delete_torrent(rh, delete_files=should_delete_files):
+                    success_count += 1
+                    logger.info(f"Successfully deleted torrent {rh} from race client (delete_files={should_delete_files}).")
+                    
+            if success_count > 0:
                 call_telegram_api("answerCallbackQuery", {
                     "callback_query_id": callback_id,
-                    "text": "✅ Successfully deleted from race client!"
+                    "text": f"? Successfully deleted {success_count} torrent(s)!"
                 }, bot_token)
                 
                 orig_text = message.get("text", "")
                 orig_text_escaped = orig_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
                 
-                orig_keyboard = message.get("reply_markup", {}).get("inline_keyboard", [])
                 new_keyboard = []
                 for row in orig_keyboard:
                     new_row = []
                     for button in row:
-                        if button.get("callback_data") == cq.get("data"):
+                        cb = button.get("callback_data", "")
+                        if cb in [f"del_race:{h}" for h in hashes_to_delete]:
                             new_row.append({
                                 "text": "? Removed!",
                                 "callback_data": "ignore"
                             })
+                        elif cb == "del_all":
+                            if data == "del_all" or active_trackers <= 1:
+                                new_row.append({
+                                    "text": "? Removed All!",
+                                    "callback_data": "ignore"
+                                })
+                            else:
+                                new_row.append(button)
                         else:
                             new_row.append(button)
                     new_keyboard.append(new_row)
@@ -287,14 +328,14 @@ def handle_telegram_callback_query(config, cq, bot_token):
             else:
                 call_telegram_api("answerCallbackQuery", {
                     "callback_query_id": callback_id,
-                    "text": "❌ Failed to delete torrent from race client. Check logs.",
+                    "text": "? Failed to delete torrent from race client. Check logs.",
                     "show_alert": True
                 }, bot_token)
         except Exception as e:
-            logger.error(f"Error executing Telegram deletion of racing torrent {racing_hash}: {e}")
+            logger.error(f"Error executing Telegram deletion: {e}")
             call_telegram_api("answerCallbackQuery", {
                 "callback_query_id": callback_id,
-                "text": f"❌ Error: {str(e)[:50]}",
+                "text": f"? Error: {str(e)[:50]}",
                 "show_alert": True
             }, bot_token)
 
