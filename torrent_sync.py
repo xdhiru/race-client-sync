@@ -304,27 +304,24 @@ def inject_racing_torrents(local_info_hash, details, sorted_files, remote_save_p
                 try:
                     racing_torrent_bytes = racing_client.export_torrent(rt_hash)
                     if racing_torrent_bytes:
-                        normal_client.add_torrent(
+                        add_ok = normal_client.add_torrent(
                             torrent_bytes=racing_torrent_bytes,
                             save_path=remote_save_path,
                             category=config["paths"].get("remote_category", "remote"),
                             is_skip_checking=True
                         )
-                        logger.info(f"Successfully added Racing torrent {rt_hash} to normal client pointing to FUSE.")
-                        injected_hashes.append(rt_hash)
-                        
-                        try:
-                            racing_completed_cat = config.get("racing_settings", {}).get("completed_category", "processed")
-                            racing_client.set_category(rt_hash, racing_completed_cat)
-                        except Exception:
-                            pass
+                        if add_ok:
+                            logger.info(f"Successfully added Racing torrent {rt_hash} to normal client pointing to FUSE.")
+                            injected_hashes.append(rt_hash)
+                            try:
+                                racing_completed_cat = config.get("racing_settings", {}).get("completed_category", "processed")
+                                racing_client.set_category(rt_hash, racing_completed_cat)
+                            except Exception:
+                                pass
+                        else:
+                            logger.error(f"Failed to inject matched racing torrent {rt_hash} to normal client.")
                 except Exception as e:
-                    err_msg_lower = str(e).lower()
-                    if "torrent hash" in err_msg_lower or "409" in err_msg_lower or "conflict" in err_msg_lower:
-                        logger.info(f"Racing torrent {rt_hash} already exists in normal client.")
-                        injected_hashes.append(rt_hash)
-                    else:
-                        logger.error(f"Failed to inject matched racing torrent {rt_hash}: {e}")
+                    logger.error(f"Error during export/injection of racing torrent {rt_hash}: {e}")
     except Exception as e:
         logger.error(f"Active Discovery (Racing Client) failed: {e}")
         
@@ -371,22 +368,17 @@ def inject_racing_torrents(local_info_hash, details, sorted_files, remote_save_p
                                 
                         if res_hash and res_hash not in injected_hashes and res_hash != local_info_hash.lower():
                             logger.info(f"Active Discovery: Found matching Prowlarr cross-seed from {idx_name} (Hash: {res_hash}). Migrating now.")
-                            try:
-                                normal_client.add_torrent(
-                                    torrent_bytes=torrent_bytes,
-                                    save_path=remote_save_path,
-                                    category=config["paths"].get("remote_category", "remote"),
-                                    is_skip_checking=True
-                                )
+                            add_ok = normal_client.add_torrent(
+                                torrent_bytes=torrent_bytes,
+                                save_path=remote_save_path,
+                                category=config["paths"].get("remote_category", "remote"),
+                                is_skip_checking=True
+                            )
+                            if add_ok:
                                 logger.info(f"Successfully added Prowlarr cross-seed {res_hash} to normal client pointing to FUSE.")
                                 injected_hashes.append(res_hash)
-                            except Exception as e:
-                                err_msg_lower = str(e).lower()
-                                if "torrent hash" in err_msg_lower or "409" in err_msg_lower or "conflict" in err_msg_lower:
-                                    logger.info(f"Prowlarr cross-seed {res_hash} already exists in normal client.")
-                                    injected_hashes.append(res_hash)
-                                else:
-                                    logger.error(f"Failed to inject matched Prowlarr cross-seed {res_hash}: {e}")
+                            else:
+                                logger.error(f"Failed to inject matched Prowlarr cross-seed {res_hash} to normal client.")
             except Exception as e:
                 logger.error(f"Active Discovery (Prowlarr {idx_name}) failed: {e}")
                 
@@ -647,19 +639,16 @@ def process_state_machine(config, state, client):
                     
                     if next_idx < total_batches:
                         logger.info(f"Completed batch {next_idx}/{total_batches} for {job['name']}. Re-adding torrent for batch {next_idx + 1}.")
-                        try:
-                            client.add_torrent(
-                                torrent_bytes=job["torrent_file"],
-                                save_path=config["paths"]["local_save_path"],
-                                category=config["paths"].get("category"),
-                                paused=True
-                            )
-                        except Exception as e:
-                            err_msg_lower = str(e).lower()
-                            if "torrent hash" in err_msg_lower or "409" in err_msg_lower or "conflict" in err_msg_lower:
-                                logger.info(f"Torrent {job['name']} already exists when re-adding for next batch. Proceeding.")
-                            else:
-                                raise e
+                        add_ok = client.add_torrent(
+                            torrent_bytes=job["torrent_file"],
+                            save_path=config["paths"]["local_save_path"],
+                            category=config["paths"].get("category"),
+                            paused=True
+                        )
+                        if not add_ok:
+                            logger.error(f"Failed to re-add torrent {job['name']} for batch {next_idx + 1}. Will retry on next loop.")
+                            continue
+                            
                         try:
                             client.pause_torrent(info_hash)
                         except Exception:
@@ -709,26 +698,32 @@ def process_state_machine(config, state, client):
                     logger.info(f"FUSE cooldown of {fuse_cooldown}s completed for {job['name']}. Adding to remote seeding path directly.")
                     remote_target, remote_save_path = get_job_remote_paths(config, job["name"])
                     
-                    try:
-                        try:
-                            client.add_torrent(
-                                torrent_bytes=job["torrent_file"],
-                                save_path=remote_save_path,
-                                category=config["paths"].get("remote_category", "remote"),
-                                is_skip_checking=True
-                            )
-                        except Exception as e:
-                            err_msg_lower = str(e).lower()
-                            if "torrent hash" in err_msg_lower or "409" in err_msg_lower or "conflict" in err_msg_lower:
-                                logger.info(f"Torrent {job['name']} already exists on remote path. Proceeding.")
-                            else:
-                                raise e
+                    add_ok = client.add_torrent(
+                        torrent_bytes=job["torrent_file"],
+                        save_path=remote_save_path,
+                        category=config["paths"].get("remote_category", "remote"),
+                        is_skip_checking=True
+                    )
+                    if add_ok:
                         job["state"] = "added_remote"
                         job["readd_start_time"] = time.time()
+                        job.pop("readd_retries", None)
                         save_state(state)
                         logger.info(f"Successfully re-added torrent {job['name']} to remote path.")
-                    except Exception as e:
-                        logger.error(f"Failed to re-add torrent {job['name']} to remote path: {e}")
+                    else:
+                        retries = job.get("readd_retries", 0) + 1
+                        job["readd_retries"] = retries
+                        max_readd_retries = config.get("settings", {}).get("max_readd_retries", 10)
+                        if retries <= max_readd_retries:
+                            logger.warning(f"Failed to add torrent {job['name']} to remote path ({remote_save_path}). Attempt {retries}/{max_readd_retries}. Backing off for {fuse_cooldown}s...")
+                            job["move_completed_time"] = time.time()
+                            save_state(state)
+                        else:
+                            logger.error(f"Failed to add torrent {job['name']} to remote path after {max_readd_retries} attempts.")
+                            job["state"] = "add_remote_failed"
+                            job["error_msg"] = f"Failed to add to remote path after {max_readd_retries} retries"
+                            update_telegram_status(config, job, info_hash)
+                            save_state(state)
 
             # --- STATE: added_remote ---
             elif current_state == "added_remote":
@@ -1052,21 +1047,16 @@ def main():
                 fuse_target = os.path.join(remote_save_path, details["name"])
                 if os.path.exists(fuse_target):
                     logger.info(f"Torrent {details['name']} already exists on FUSE mount ({fuse_target}). Adding to client in remote seeding state.")
-                    try:
-                        client.add_torrent(
-                            torrent_bytes=torrent_file,
-                            save_path=remote_save_path,
-                            category=config["paths"].get("remote_category", "remote"),
-                            is_skip_checking=True,
-                            paused=True
-                        )
-                    except Exception as e:
-                        err_msg_lower = str(e).lower()
-                        if "torrent hash" in err_msg_lower or "409" in err_msg_lower or "conflict" in err_msg_lower:
-                            pass
-                        else:
-                            logger.error(f"Failed to add existing FUSE torrent {details['name']} to client: {e}")
-                            continue
+                    add_ok = client.add_torrent(
+                        torrent_bytes=torrent_file,
+                        save_path=remote_save_path,
+                        category=config["paths"].get("remote_category", "remote"),
+                        is_skip_checking=True,
+                        paused=True
+                    )
+                    if not add_ok:
+                        logger.error(f"Failed to add existing FUSE torrent {details['name']} to client.")
+                        continue
                             
                     try:
                         client.resume_torrent(info_hash)
@@ -1131,19 +1121,15 @@ def main():
                         
                     logger.info(f"Scheduling torrent {details['name']} (Total: {size / (1024**3):.2f} GB, Batch 1: {first_batch_size / (1024**3):.2f} GB) under SSD limit ({ssd_limit / (1024**3):.2f} GB)")
                     try:
-                        try:
-                            client.add_torrent(
-                                torrent_bytes=torrent_file,
-                                save_path=config["paths"]["local_save_path"],
-                                category=config["paths"].get("category"),
-                                paused=True
-                            )
-                        except Exception as e:
-                            err_msg_lower = str(e).lower()
-                            if "torrent hash" in err_msg_lower or "409" in err_msg_lower or "conflict" in err_msg_lower:
-                                logger.info(f"Torrent {details['name']} already exists in client. Proceeding to track.")
-                            else:
-                                raise e
+                        add_ok = client.add_torrent(
+                            torrent_bytes=torrent_file,
+                            save_path=config["paths"]["local_save_path"],
+                            category=config["paths"].get("category"),
+                            paused=True
+                        )
+                        if not add_ok:
+                            logger.error(f"Failed to add torrent {details['name']} to client. Will retry on next loop.")
+                            continue
                                 
                         state["active_jobs"][info_hash] = {
                             "torrent_file": torrent_file,

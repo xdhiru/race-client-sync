@@ -114,6 +114,10 @@ class QBittorrentClient(BaseTorrentClient):
                 )
             return True
         except Exception as e:
+            err_msg_lower = str(e).lower()
+            if "conflict" in err_msg_lower or "409" in err_msg_lower or "torrent hash" in err_msg_lower or "already exist" in err_msg_lower:
+                logger.info(f"Torrent already exists in qBittorrent: {e}")
+                return True
             logger.error(f"Failed to add torrent to qBittorrent: {e}")
             return False
 
