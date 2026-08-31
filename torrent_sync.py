@@ -583,6 +583,7 @@ def process_state_machine(config, state, client):
                         job["state"] = "rclone_moving"
                         job["rclone_retries"] = 0
                         job["move_start_time"] = time.time()
+                        update_telegram_status(config, job, info_hash)
                         save_state(state)
                     except Exception as e:
                         logger.error(f"Failed to delete torrent {info_hash} from client: {e}")
@@ -659,11 +660,13 @@ def process_state_machine(config, state, client):
                         job["added_time"] = time.time()
                         job["completion_time"] = None
                         job["priorities_configured"] = False
+                        update_telegram_status(config, job, info_hash)
                         save_state(state)
                     else:
                         logger.info(f"All batches completed for {job['name']}. Entering FUSE mount wait state.")
                         job["state"] = "fuse_wait"
                         job["move_completed_time"] = time.time()
+                        update_telegram_status(config, job, info_hash)
                         save_state(state)
                         
                     rclone_status.pop(info_hash, None)
@@ -708,6 +711,7 @@ def process_state_machine(config, state, client):
                         job["state"] = "added_remote"
                         job["readd_start_time"] = time.time()
                         job.pop("readd_retries", None)
+                        update_telegram_status(config, job, info_hash)
                         save_state(state)
                         logger.info(f"Successfully re-added torrent {job['name']} to remote path.")
                     else:
