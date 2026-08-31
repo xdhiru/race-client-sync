@@ -272,7 +272,7 @@ def main():
                 if public_match:
                     matched_local_hash = public_match["hash"].lower()
                     logger.info(f"Found public matching torrent in racing client: '{public_match['name']}' (Hash: {matched_local_hash})")
-                    
+                    dest_path = os.path.join(watch_dir, f"{matched_local_hash}.torrent")
                     try:
                         logger.info(f"Exporting public .torrent file from racing client via SCP/API for hash {matched_local_hash}")
                         torrent_bytes = client.export_torrent(matched_local_hash)
