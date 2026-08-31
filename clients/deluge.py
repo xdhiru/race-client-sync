@@ -1,7 +1,6 @@
 import json
 import logging
-import urllib.request
-import urllib.parse
+import requests
 from .base import BaseTorrentClient
 
 logger = logging.getLogger(__name__)
@@ -9,13 +8,37 @@ logger = logging.getLogger(__name__)
 class DelugeClient(BaseTorrentClient):
     """
     Deluge client wrapper interacting with the Deluge Web API (JSON-RPC) on port 8112.
-    Does not require any external client libraries.
+    Supports Nginx Basic Auth via requests_args.auth and custom timeouts.
     """
     def __init__(self, config_dict):
         super().__init__(config_dict)
         self.url = self.config["url"].rstrip('/')
         self.password = self.config["password"]
-        self.session_cookie = None
+        self.session = None
+        self.timeout = (15, 45)
+        self._init_session()
+
+    def _init_session(self):
+        self.session = requests.Session()
+        req_args = self.config.get("requests_args") or {}
+        if isinstance(req_args, dict):
+            if "timeout" in req_args:
+                t = req_args["timeout"]
+                if isinstance(t, list):
+                    self.timeout = tuple(t)
+                else:
+                    self.timeout = t
+            if "auth" in req_args:
+                auth = req_args["auth"]
+                if isinstance(auth, (list, tuple)) and len(auth) == 2:
+                    self.session.auth = tuple(auth)
+            if "headers" in req_args and isinstance(req_args["headers"], dict):
+                self.session.headers.update(req_args["headers"])
+            if "verify" in req_args:
+                self.session.verify = req_args["verify"]
+
+        if "auth" in self.config and isinstance(self.config["auth"], (list, tuple)) and len(self.config["auth"]) == 2:
+            self.session.auth = tuple(self.config["auth"])
 
     def _call(self, method, params=None) -> dict:
         if params is None:
@@ -27,44 +50,21 @@ class DelugeClient(BaseTorrentClient):
             "id": 1
         }
         
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "application/json"
-        }
-        if self.session_cookie:
-            headers["Cookie"] = self.session_cookie
-
-        # Support Nginx Basic Auth if requests_args.auth is present in config
-        if "requests_args" in self.config:
-            user_args = self.config["requests_args"]
-            if isinstance(user_args, dict) and "auth" in user_args:
-                auth_list = user_args["auth"]
-                if isinstance(auth_list, (list, tuple)) and len(auth_list) == 2:
-                    import base64
-                    auth_str = f"{auth_list[0]}:{auth_list[1]}"
-                    encoded = base64.b64encode(auth_str.encode('utf-8')).decode('utf-8')
-                    headers["Authorization"] = f"Basic {encoded}"
-            
         req_url = f"{self.url}/json"
-        data = json.dumps(payload).encode('utf-8')
-        req = urllib.request.Request(req_url, data=data, headers=headers, method="POST")
-        
         try:
-            with urllib.request.urlopen(req, timeout=15) as response:
-                res = json.loads(response.read().decode('utf-8'))
-                
-                # Capture session cookie if logging in
-                if method == "auth.login" and not self.session_cookie:
-                    cookies = response.headers.get_all("Set-Cookie")
-                    if cookies:
-                        for cookie in cookies:
-                            if "_session_id=" in cookie:
-                                self.session_cookie = cookie.split(';')[0]
-                                break
-                                
-                if res.get("error"):
-                    raise Exception(f"Deluge Web API error: {res['error']}")
-                return res
+            if not self.session:
+                self._init_session()
+            response = self.session.post(
+                req_url,
+                json=payload,
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            res = response.json()
+            if res.get("error"):
+                raise Exception(f"Deluge Web API error: {res['error']}")
+            return res
         except Exception as e:
             if not method.startswith("label."):
                 logger.error(f"Deluge JSON-RPC request failed ({method}): {e}")
@@ -72,7 +72,7 @@ class DelugeClient(BaseTorrentClient):
 
     def connect(self) -> bool:
         try:
-            self.session_cookie = None
+            self._init_session()
             res = self._call("auth.login", [self.password])
             if res.get("result") is True:
                 # Verify connection health
