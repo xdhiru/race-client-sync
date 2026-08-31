@@ -21,6 +21,7 @@ from state_machine import (
     get_job_remote_paths,
     _build_batches_from_files,
     Transition,
+    align_batches_with_client,
 )
 
 def normalize_info_hash(h):
@@ -439,6 +440,7 @@ def main():
                             continue
 
                         logger.info(f"Torrent {details['name']} already exists locally in client. Re-associating with state tracking.")
+                        align_batches_with_client(client, info_hash, batches)
                         priorities_ok = False
                         try:
                             try:

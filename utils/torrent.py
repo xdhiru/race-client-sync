@@ -144,7 +144,19 @@ def get_torrent_details(torrent_path):
     files_info = []
     if is_multi_file:
         size = 0
-        for idx, file_dict in enumerate(info_dict[b'files']):
+        idx = 0
+        for file_dict in info_dict[b'files']:
+            is_pad = False
+            if b'path' in file_dict:
+                path_components = [p.decode('utf-8', errors='ignore').lower() for p in file_dict[b'path']]
+                if '.pad' in path_components or any(p.startswith('.pad') for p in path_components) or '_____padding_file' in ''.join(path_components):
+                    is_pad = True
+            if file_dict.get(b'padding') or file_dict.get(b'attr') == b'p':
+                is_pad = True
+
+            if is_pad:
+                continue
+
             f_size = file_dict[b'length']
             size += f_size
             rel_path = "/".join(p.decode('utf-8', errors='ignore') for p in file_dict[b'path'])
@@ -154,6 +166,7 @@ def get_torrent_details(torrent_path):
                 "name": full_rel_path,
                 "size": f_size
             })
+            idx += 1
     else:
         size = info_dict[b'length']
         files_info.append({

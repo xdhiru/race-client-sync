@@ -99,13 +99,17 @@ class TorrentJobStateMachine:
         if idx >= len(batches):
             return progress >= 0.999
         batch_ids = set(batches[idx]["file_ids"])
+        if not batch_ids:
+            return progress >= 0.999
         completed = 0.0
         total = batches[idx]["size"]
+        matched = 0
         for f in files:
             if f.get("id") in batch_ids:
                 completed += f.get("size", 0) * f.get("progress", 0.0)
-        if total <= 0:
-            return True
+                matched += 1
+        if total <= 0 or matched == 0:
+            return progress >= 0.999
         return (completed / total) >= 0.999
 
     def _ensure_batch_priorities(self, t):
@@ -125,8 +129,12 @@ class TorrentJobStateMachine:
             all_ids = [f["id"] for f in files]
             curr_idx = self.job.get("current_batch_index", 0)
             batch_ids = batches[curr_idx]["file_ids"]
+            matched_ids = self._map_batch_ids_to_client(batch_ids, files)
+            if not matched_ids:
+                logger.warning(f"No batch file IDs matched client file list on {self.info_hash}; skipping priority set.")
+                return False
             self.client.set_file_priorities(self.info_hash, all_ids, 0)
-            self.client.set_file_priorities(self.info_hash, batch_ids, 1)
+            self.client.set_file_priorities(self.info_hash, matched_ids, 1)
             try:
                 self.client.resume_torrent(self.info_hash)
             except Exception:
@@ -137,6 +145,34 @@ class TorrentJobStateMachine:
             logger.warning(f"Priority config failed for {self.info_hash}: {e}")
             return False
 
+    def _map_batch_ids_to_client(self, batch_ids, files):
+        """Remap batch file IDs (from .torrent parsing) to actual client file IDs.
+
+        Falls back to direct ID match first, then matches by basename.
+        """
+        if not batch_ids or not files:
+            return []
+        client_ids = {f["id"] for f in files}
+        if all(bid in client_ids for bid in batch_ids):
+            return list(batch_ids)
+        name_to_id = {}
+        for f in files:
+            base = os.path.basename(f.get("name", ""))
+            if base:
+                name_to_id[base] = f["id"]
+        remapped = []
+        for batch in self.job.get("batches", []):
+            for fid, fname in zip(batch.get("file_ids", []), batch.get("file_paths", [])):
+                if fid in batch_ids:
+                    cid = name_to_id.get(os.path.basename(fname))
+                    if cid is not None and cid not in remapped:
+                        remapped.append(cid)
+        if remapped:
+            return remapped
+        if all(isinstance(bid, int) for bid in batch_ids):
+            return [bid for bid in batch_ids if bid in client_ids]
+        return []
+
     def _handle_added_local(self, t):
         if not t:
             tf = self.job.get("torrent_file", "")
@@ -146,6 +182,15 @@ class TorrentJobStateMachine:
                     self.job["_evict"] = True
                 return Transition.FAILED
             return Transition.WAITING
+
+        if self.job.get("batches") and not self.job.get("_batches_aligned"):
+            try:
+                files = self.client.get_torrent_files(self.info_hash)
+            except Exception:
+                files = []
+            if files:
+                align_batches_with_client(self.client, self.info_hash, self.job["batches"])
+                self.job["_batches_aligned"] = True
 
         if not self.job.get("priorities_configured") and self.job.get("batches"):
             if not self._ensure_batch_priorities(t):
@@ -402,6 +447,45 @@ class TorrentJobStateMachine:
         with JOBS_LOCK:
             self.job["_evict"] = True
         return Transition.COMPLETED
+
+
+def align_batches_with_client(client, info_hash, batches):
+    """Remap batches' file_ids to match the client's actual file index IDs.
+
+    Mutates the provided batches list in place. Returns True if all batches
+    were successfully aligned (or there were none to align). Returns False
+    if the client file list could not be fetched or no batch IDs matched,
+    in which case the original IDs are preserved.
+    """
+    if not batches:
+        return True
+    try:
+        files = client.get_torrent_files(info_hash)
+    except Exception as e:
+        logger.warning(f"align_batches_with_client: get_torrent_files failed for {info_hash}: {e}")
+        return False
+    if not files:
+        return False
+    client_ids = {f["id"] for f in files}
+    name_to_id = {}
+    for f in files:
+        base = os.path.basename(f.get("name", ""))
+        if base:
+            name_to_id[base] = f["id"]
+    all_aligned = True
+    for batch in batches:
+        new_ids = []
+        for fid, fname in zip(batch.get("file_ids", []), batch.get("file_paths", [])):
+            if fid in client_ids:
+                new_ids.append(fid)
+                continue
+            cid = name_to_id.get(os.path.basename(fname))
+            if cid is not None:
+                new_ids.append(cid)
+            else:
+                all_aligned = False
+        batch["file_ids"] = new_ids
+    return all_aligned
 
 
 def _build_batches_from_files(files, ssd_limit):
