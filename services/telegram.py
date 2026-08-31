@@ -337,7 +337,7 @@ def handle_telegram_callback_query(config, cq, bot_token):
                         cb = button.get("callback_data", "")
                         if cb in [f"del_race:{h}" for h in hashes_to_delete]:
                             new_row.append({
-                                "text": button.get("text", "").replace("Delete ", "✅ Removed "),
+                                "text": button.get("text", "").replace("\U0001F5D1 ", "\u2705 "),
                                 "callback_data": "ignore"
                             })
                         elif cb == "del_all":
