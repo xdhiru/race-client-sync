@@ -201,7 +201,8 @@ def get_current_occupied_space(active_jobs):
                 idx = job["current_batch_index"]
                 if idx < len(job["batches"]):
                     occupied += job["batches"][idx]["size"]
-                # else: batch index OOB means all batches completed, occupied = 0
+                else:
+                    pass  # Batch index OOB, no local space occupied
             else:
                 occupied += job["size"]
     return occupied
@@ -231,16 +232,6 @@ def get_physical_free_space(path):
         logger.error(f"Failed to check disk usage for path {path}: {e}")
         return 0
 
-def get_job_remote_paths(config, torrent_name):
-    remote_target = config["rclone"]["remote"]
-    remote_save_path = config["paths"]["remote_save_path"]
-    
-    if re.search(r'[sS]\d+[\s._-]*[eE]\d+', torrent_name):
-        remote_target = f"{remote_target.rstrip('/')}/unsorted/"
-        remote_save_path = f"{remote_save_path.rstrip('/')}/unsorted/"
-        
-    return remote_target, remote_save_path
-
 
 def _archive_file_safely(src_file, config):
     """Archive a file to completed_dir, handling cross-device moves."""
@@ -255,11 +246,22 @@ def _archive_file_safely(src_file, config):
             base, ext = os.path.splitext(dest_file)
             dest_file = f"{base}_{int(time.time())}{ext}"
         # Use copy + unlink for cross-device support
+        import shutil
         shutil.copy2(src_file, dest_file)
         os.unlink(src_file)
         logger.info(f"Archived {src_file} to {dest_file}.")
     except Exception as e:
         logger.error(f"Failed to archive file {src_file}: {e}")
+
+def get_job_remote_paths(config, torrent_name):
+    remote_target = config["rclone"]["remote"]
+    remote_save_path = config["paths"]["remote_save_path"]
+    
+    if re.search(r'[sS]\d+[\s._-]*[eE]\d+', torrent_name):
+        remote_target = f"{remote_target.rstrip('/')}/unsorted/"
+        remote_save_path = f"{remote_save_path.rstrip('/')}/unsorted/"
+        
+    return remote_target, remote_save_path
 
 # ==============================================================================
 # Main Process Loop
@@ -447,14 +449,14 @@ def process_state_machine(config, state, client):
                                     completed_dir = config["paths"].get("completed_dir")
                                     if not completed_dir:
                                         watch_dir = config["paths"]["watch_dir"]
-completed_dir = os.path.join(watch_dir, "completed")
-                            os.makedirs(completed_dir, exist_ok=True)
-                            dest_file = os.path.join(completed_dir, os.path.basename(job["torrent_file"]))
-                            if os.path.exists(dest_file):
-                                base, ext = os.path.splitext(dest_file)
-                                dest_file = f"{base}_{int(time.time())}{ext}"
-                            if os.path.exists(job["torrent_file"]):
-                                _archive_file_safely(job["torrent_file"], config)
+                                        completed_dir = os.path.join(watch_dir, "completed")
+                                    os.makedirs(completed_dir, exist_ok=True)
+                                    dest_file = os.path.join(completed_dir, os.path.basename(job["torrent_file"]))
+                                    if os.path.exists(dest_file):
+                                        base, ext = os.path.splitext(dest_file)
+                                        dest_file = f"{base}_{int(time.time())}{ext}"
+                                    if os.path.exists(job["torrent_file"]):
+                                        _archive_file_safely(job["torrent_file"], config)
                                         
                                     torrent_bytes = client.export_torrent(info_hash)
                                     client.delete_torrent(info_hash, delete_files=False)
@@ -478,7 +480,7 @@ completed_dir = os.path.join(watch_dir, "completed")
                                     state_changed = True
                                     
                                     # SYNCHRONOUS INJECTION: Inject any pending racing torrents right now
-                                    sorted_files = sorted(files, key=lambda x: x["name"]) if 'files' in locals() else []
+                                    sorted_files = sorted(files, key=lambda x: x["name"]) if files else []
                                     racing_hashes = inject_racing_torrents(info_hash, job, sorted_files, remote_save_path, config, client)
                                     
                                     send_already_seeding_notification(
@@ -756,14 +758,14 @@ completed_dir = os.path.join(watch_dir, "completed")
                         watch_dir = config["paths"]["watch_dir"]
                         completed_dir = os.path.join(watch_dir, "completed")
                     
-try:
+                    try:
                         os.makedirs(completed_dir, exist_ok=True)
                         dest_file = os.path.join(completed_dir, os.path.basename(job["torrent_file"]))
                         
                         if os.path.exists(dest_file):
                             base, ext = os.path.splitext(dest_file)
                             dest_file = f"{base}_{int(time.time())}{ext}"
-                        
+                            
                         _archive_file_safely(job["torrent_file"], config)
                         logger.info(f"Moved {job['torrent_file']} to {dest_file}")
                     except Exception as e:
@@ -776,7 +778,8 @@ try:
                     # We need details and sorted_files. We can decode the torrent_file.
                     try:
                         from utils.torrent import get_torrent_details
-                        details, files = get_torrent_details(job["torrent_file"])
+                        details = get_torrent_details(job["torrent_file"])
+                        files = details["files"]
                         sorted_files = sorted(files, key=lambda x: x["name"])
                     except Exception:
                         details = job
@@ -872,8 +875,6 @@ def main():
                     parsed_name = urllib.parse.unquote(name_match.group(1)) if name_match else os.path.splitext(os.path.basename(magnet_file))[0]
                     
                     if info_hash in state["active_jobs"]:
-                        # Archive the magnet file since we're already tracking this hash
-                        _archive_file_safely(magnet_file, config)
                         continue
                         
                     logger.info(f"Adding magnet link for {parsed_name} (Hash: {info_hash}) to client.")
