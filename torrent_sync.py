@@ -432,8 +432,8 @@ def process_state_machine(config, state, client):
                             job["size"] = total_size
                             job["is_multi_file"] = len(files) > 1
                             
-                            remote_save_path_cfg = config["paths"]["remote_save_path"]
-                            fuse_target = os.path.join(remote_save_path_cfg, job["name"])
+                            _, remote_save_path = get_job_remote_paths(config, job["name"])
+                            fuse_target = os.path.join(remote_save_path, job["name"])
                             
                             if os.path.exists(fuse_target):
                                 logger.info(f"Magnet {job['name']} already exists on FUSE mount ({fuse_target}). Archiving and switching to remote tracking.")
@@ -454,7 +454,7 @@ def process_state_machine(config, state, client):
                                     client.delete_torrent(info_hash, delete_files=False)
                                     client.add_torrent(
                                         torrent_bytes=torrent_bytes,
-                                        save_path=remote_save_path_cfg,
+                                        save_path=remote_save_path,
                                         category=config["paths"].get("remote_category", "remote"),
                                         is_skip_checking=True,
                                         paused=True
@@ -482,7 +482,7 @@ def process_state_machine(config, state, client):
                                     )
                                     
                                     # SYNCHRONOUS INJECTION: Inject any pending racing torrents right now
-                                    inject_racing_torrents(info_hash, remote_save_path_cfg, config, client)
+                                    inject_racing_torrents(info_hash, remote_save_path, config, client)
                                     
                                     continue
                                 except Exception as e:
@@ -775,8 +775,8 @@ def process_state_machine(config, state, client):
                     
                     # Check if there are pending racing tracker mappings
                     # SYNCHRONOUS INJECTION: Inject any pending racing torrents right now
-                    remote_save_path_cfg = config["paths"]["remote_save_path"]
-                    inject_racing_torrents(info_hash, remote_save_path_cfg, config, client)
+                    _, remote_save_path = get_job_remote_paths(config, details["name"])
+                    inject_racing_torrents(info_hash, remote_save_path, config, client)
 
                     # Always pop the job from active_jobs immediately.
                     active_jobs.pop(info_hash, None)
@@ -991,8 +991,8 @@ def main():
                             info_hash=info_hash
                         )
                         # SYNCHRONOUS INJECTION: Inject any pending racing torrents right now
-                        remote_save_path_cfg = config["paths"]["remote_save_path"]
-                        inject_racing_torrents(info_hash, remote_save_path_cfg, config, client)
+                        _, remote_save_path = get_job_remote_paths(config, details["name"])
+                        inject_racing_torrents(info_hash, remote_save_path, config, client)
                         
                         continue
                         
@@ -1041,14 +1041,14 @@ def main():
                         logger.error(f"Failed to re-associate torrent {details['name']}: {e}")
                         continue
                         
-                remote_save_path_cfg = config["paths"]["remote_save_path"]
-                fuse_target = os.path.join(remote_save_path_cfg, details["name"])
+                _, remote_save_path = get_job_remote_paths(config, details["name"])
+                fuse_target = os.path.join(remote_save_path, details["name"])
                 if os.path.exists(fuse_target):
                     logger.info(f"Torrent {details['name']} already exists on FUSE mount ({fuse_target}). Adding to client in remote seeding state.")
                     try:
                         client.add_torrent(
                             torrent_bytes=torrent_file,
-                            save_path=remote_save_path_cfg,
+                            save_path=remote_save_path,
                             category=config["paths"].get("remote_category", "remote"),
                             is_skip_checking=True,
                             paused=True
@@ -1111,7 +1111,7 @@ def main():
                     save_state(state)
                     
                     # SYNCHRONOUS INJECTION: Inject any pending racing torrents right now
-                    inject_racing_torrents(info_hash, remote_save_path_cfg, config, client)
+                    inject_racing_torrents(info_hash, remote_save_path, config, client)
                     
                     continue
                 
