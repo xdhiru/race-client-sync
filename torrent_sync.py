@@ -471,12 +471,15 @@ def process_state_machine(config, state, client):
                                     save_state(state)
                                     state_changed = True
                                     
-                                    send_already_seeding_notification(
-                                        config,
-                                        name=job["name"],
-                                        size=job["size"],
-                                        tracker=job.get("tracker", "Unknown")
-                                    )
+                                    racing_hash = get_tracker_mapping(info_hash)
+                                      send_already_seeding_notification(
+                                          config,
+                                          name=job["name"],
+                                          size=job["size"],
+                                          tracker=job.get("tracker", "Unknown"),
+                                          racing_hash=racing_hash,
+                                          info_hash=info_hash
+                                      )
                                     
                                     # SYNCHRONOUS INJECTION: Inject any pending racing torrents right now
                                     inject_racing_torrents(info_hash, remote_save_path_cfg, config, client)
@@ -980,12 +983,13 @@ def main():
                             racing_hash = get_tracker_mapping(stem)
                             
                         send_already_seeding_notification(
-                            config,
-                            name=details["name"],
-                            size=details["size"],
-                            tracker=details.get("tracker", "Unknown"),
-                            racing_hash=racing_hash
-                        )
+                              config,
+                              name=details["name"],
+                              size=details["size"],
+                              tracker=details.get("tracker", "Unknown"),
+                              racing_hash=racing_hash,
+                              info_hash=info_hash
+                          )
                         continue
                         
                     logger.info(f"Torrent {details['name']} already exists locally in client. Re-associating with state tracking.")
