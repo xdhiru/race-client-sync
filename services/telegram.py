@@ -86,7 +86,7 @@ def build_racing_keyboard(config, racing_hash, public_hash=None):
         domain = ""
         found = False
         for t in racing_torrents:
-            if t["hash"] == rh:
+            if t["hash"].lower() == rh.lower():
                 found = True
                 trackers = t.get("trackers", [])
                 if trackers:
@@ -103,7 +103,7 @@ def build_racing_keyboard(config, racing_hash, public_hash=None):
     for rh in actual_racing_hashes:
         domain = ""
         for t in racing_torrents:
-            if t["hash"] == rh:
+            if t["hash"].lower() == rh.lower():
                 trackers = t.get("trackers", [])
                 if trackers:
                     domain = trackers[0].replace("https://", "").replace("http://", "").split("/")[0]

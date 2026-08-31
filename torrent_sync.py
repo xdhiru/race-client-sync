@@ -288,8 +288,8 @@ def inject_racing_torrents(local_info_hash, details, sorted_files, remote_save_p
     try:
         racing_torrents = racing_client.get_torrents_info()
         for rt in racing_torrents:
-            rt_hash = rt["hash"]
-            if rt_hash.lower() == local_info_hash.lower():
+            rt_hash = (rt.get("hash") or "").lower()
+            if not rt_hash or rt_hash == local_info_hash.lower():
                 continue
                 
             rt_files = racing_client.get_torrent_files(rt_hash)
@@ -424,7 +424,7 @@ def process_state_machine(config, state, client):
                             
                             try:
                                 t_info = client.get_torrents_info()
-                                my_t = next((t for t in t_info if t["hash"] == info_hash), None)
+                                my_t = next((t for t in t_info if t["hash"].lower() == info_hash.lower()), None)
                                 if my_t:
                                     job["name"] = my_t["name"]
                             except Exception:
@@ -485,7 +485,7 @@ def process_state_machine(config, state, client):
                                         info_hash=info_hash
                                     )
                                     
-                                    continue
+                                    break
                                 except Exception as e:
                                     logger.error(f"Failed to switch magnet {job['name']} to FUSE path: {e}")
                             
@@ -503,7 +503,7 @@ def process_state_machine(config, state, client):
                         logger.warning(f"Failed to fetch files for magnet torrent {job['name']} (probably waiting for metadata): {e}")
                         break
 
-                if not job.get("priorities_configured", False):
+                if not job.get("priorities_configured", False) and "batches" in job:
                     logger.info(f"Enforcing/retrying batch priorities configuration for {job['name']}.")
                     try:
                         try:
@@ -529,8 +529,7 @@ def process_state_machine(config, state, client):
                 is_complete = False
                 total_batches = len(job.get("batches", []))
                 t_progress = t.get("progress", 0.0) if t else 0.0
-                t_state = t.get("state", "") if t else ""
-                is_qb_seeding = t_progress >= 1.0 or t_state.endswith("up") or "upload" in t_state or "stalled" in t_state and t_progress >= 0.999
+                is_qb_seeding = t_progress >= 0.999
 
                 # If the torrent is a single batch and qBittorrent reports completion, complete immediately
                 if total_batches <= 1 and is_qb_seeding:
@@ -576,7 +575,7 @@ def process_state_machine(config, state, client):
 
             # --- STATE: waiting_5min ---
             elif current_state == "waiting_5min":
-                elapsed = time.time() - job["completion_time"]
+                elapsed = time.time() - job.get("completion_time", 0)
                 if elapsed >= wait_time_seconds:
                     logger.info(f"Cooldown completed for {job['name']}. Deleting local torrent from qBittorrent and starting rclone move.")
                     try:
@@ -592,6 +591,8 @@ def process_state_machine(config, state, client):
             # --- STATE: rclone_moving ---
             elif current_state == "rclone_moving":
                 status = rclone_status.get(info_hash)
+                if status is None and info_hash.lower() != info_hash:
+                    status = rclone_status.get(info_hash.lower())
                 
                 if status is None:
                     max_jobs = config.get("rclone", {}).get("max_parallel_jobs", 2)
@@ -697,7 +698,7 @@ def process_state_machine(config, state, client):
             # --- STATE: fuse_wait ---
             elif current_state == "fuse_wait":
                 fuse_cooldown = config["settings"].get("fuse_cooldown_seconds", 15)
-                elapsed = time.time() - job["move_completed_time"]
+                elapsed = time.time() - job.get("move_completed_time", 0)
                 if elapsed >= fuse_cooldown:
                     logger.info(f"FUSE cooldown of {fuse_cooldown}s completed for {job['name']}. Adding to remote seeding path directly.")
                     remote_target, remote_save_path = get_job_remote_paths(config, job["name"])
@@ -750,32 +751,10 @@ def process_state_machine(config, state, client):
                     break
                     
                 is_checking = t["state"].startswith("checking") or "checking" in t["state"]
-                if t["progress"] == 1.0 and not is_checking:
+                if t.get("progress", 0.0) >= 0.999 and not is_checking:
                     logger.info(f"Torrent successfully seeding from remote path: {job['name']}. Archiving .torrent file.")
                     
-                    completed_dir = config["paths"].get("completed_dir")
-                    if not completed_dir:
-                        watch_dir = config["paths"]["watch_dir"]
-                        completed_dir = os.path.join(watch_dir, "completed")
-                    
-                    try:
-                        os.makedirs(completed_dir, exist_ok=True)
-                        dest_file = os.path.join(completed_dir, os.path.basename(job["torrent_file"]))
-                        
-                        if os.path.exists(dest_file):
-                            base, ext = os.path.splitext(dest_file)
-                            dest_file = f"{base}_{int(time.time())}{ext}"
-                            
-                        _archive_file_safely(job["torrent_file"], config)
-                        logger.info(f"Moved {job['torrent_file']} to {dest_file}")
-                    except Exception as e:
-                        logger.error(f"Failed to archive torrent file {job['torrent_file']}: {e}")
-                    
-                    job["state"] = "completed"
-                    job["seeding_completed_time"] = time.time()
-                    
-                    # SYNCHRONOUS INJECTION: Inject any pending racing torrents right now
-                    # We need details and sorted_files. We can decode the torrent_file.
+                    # Decode torrent details before archiving so cross-seed injection still has file sizes.
                     try:
                         from utils.torrent import get_torrent_details
                         details = get_torrent_details(job["torrent_file"])
@@ -784,7 +763,15 @@ def process_state_machine(config, state, client):
                     except Exception:
                         details = job
                         sorted_files = []
-                        
+                    
+                    try:
+                        _archive_file_safely(job["torrent_file"], config)
+                    except Exception as e:
+                        logger.error(f"Failed to archive torrent file {job['torrent_file']}: {e}")
+                    
+                    job["state"] = "completed"
+                    job["seeding_completed_time"] = time.time()
+                    
                     _, remote_save_path = get_job_remote_paths(config, job["name"])
                     racing_hashes = inject_racing_torrents(info_hash, details, sorted_files, remote_save_path, config, client)
                     

@@ -395,6 +395,9 @@ def main():
                             matched_result = None
                             break
                             
+                        if not matched_local_hash:
+                            logger.error(f"Matched Prowlarr result for {name} has no infohash; skipping save.")
+                            break
                         dest_path = os.path.join(watch_dir, f"{matched_local_hash.lower()}.torrent")
                         try:
                             with open(dest_path, "wb") as f_out:
