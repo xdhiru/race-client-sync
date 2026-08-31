@@ -393,7 +393,7 @@ def process_state_machine(config, state, client):
     
     try:
         torrents_list = client.get_torrents_info()
-        torrents_by_hash = {t["hash"]: t for t in torrents_list}
+        torrents_by_hash = {t["hash"].lower(): t for t in torrents_list}
     except Exception as e:
         logger.error(f"Failed to fetch torrent list from client: {e}")
         return
@@ -406,13 +406,14 @@ def process_state_machine(config, state, client):
             
             # --- STATE: added_local ---
             if current_state == "added_local":
-                t = torrents_by_hash.get(info_hash)
+                t = torrents_by_hash.get(info_hash.lower())
                 if not t:
-                    if not os.path.exists(job["torrent_file"]):
-                        logger.warning(f"Torrent file {job['torrent_file']} missing. Removing from state.")
+                    if not os.path.exists(job.get("torrent_file", "")):
+                        logger.warning(f"Torrent file {job.get('torrent_file')} missing. Removing from state.")
                         active_jobs.pop(info_hash, None)
                         save_state(state)
-                    continue
+                    # Wait until next poll — do not spin the inner while True
+                    break
                     
                 # If it's a magnet torrent, check if metadata has downloaded
                 if job.get("is_magnet", False):
@@ -497,10 +498,10 @@ def process_state_machine(config, state, client):
                             logger.info(f"Metadata downloaded for magnet torrent {job['name']}. Formed {len(batches)} batch(es).")
                         else:
                             logger.info(f"Waiting for metadata download for magnet torrent {job['name']}...")
-                            continue
+                            break
                     except Exception as e:
                         logger.warning(f"Failed to fetch files for magnet torrent {job['name']} (probably waiting for metadata): {e}")
-                        continue
+                        break
 
                 if not job.get("priorities_configured", False):
                     logger.info(f"Enforcing/retrying batch priorities configuration for {job['name']}.")
@@ -597,7 +598,7 @@ def process_state_machine(config, state, client):
                     running_jobs = sum(1 for val in rclone_status.values() if val == "running")
                     if running_jobs >= max_jobs:
                         logger.debug(f"rclone move for {job['name']} waiting. Current running: {running_jobs}/{max_jobs}")
-                        continue
+                        break
                         
                     local_dir = config["paths"]["local_save_path"]
                     remote_target, remote_save_path = get_job_remote_paths(config, job["name"])
@@ -648,7 +649,7 @@ def process_state_machine(config, state, client):
                         )
                         if not add_ok:
                             logger.error(f"Failed to re-add torrent {job['name']} for batch {next_idx + 1}. Will retry on next loop.")
-                            continue
+                            break
                             
                         try:
                             client.pause_torrent(info_hash)
@@ -731,7 +732,7 @@ def process_state_machine(config, state, client):
 
             # --- STATE: added_remote ---
             elif current_state == "added_remote":
-                t = torrents_by_hash.get(info_hash)
+                t = torrents_by_hash.get(info_hash.lower())
                 if not t:
                     # If the torrent is missing from normal client, try to re-add it (self-healing)
                     elapsed_since_readd = time.time() - job.get("readd_start_time", 0)
@@ -746,7 +747,7 @@ def process_state_machine(config, state, client):
                         )
                         job["readd_start_time"] = time.time()
                         save_state(state)
-                    continue
+                    break
                     
                 is_checking = t["state"].startswith("checking") or "checking" in t["state"]
                 if t["progress"] == 1.0 and not is_checking:
