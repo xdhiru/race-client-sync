@@ -448,7 +448,6 @@ def process_state_machine(config, state, client):
                                         base, ext = os.path.splitext(dest_file)
                                         dest_file = f"{base}_{int(time.time())}{ext}"
                                     if os.path.exists(job["torrent_file"]):
-                                        import shutil
                                         shutil.move(job["torrent_file"], dest_file)
                                         
                                     torrent_bytes = client.export_torrent(info_hash)
