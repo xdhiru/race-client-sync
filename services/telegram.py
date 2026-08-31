@@ -57,20 +57,36 @@ def send_telegram_notification(config, chat_id_key, text, reply_markup=None):
         payload["reply_markup"] = reply_markup
     call_telegram_api("sendMessage", payload, bot_token)
 
-def build_racing_keyboard(config, racing_hash, public_hash=None):
-    racing_hashes = []
+import re
+
+def _clean_name(name):
+    if not name:
+        return ""
+    for ext in ['.mkv', '.mp4', '.avi', '.ts', '.mp3', '.flac']:
+        if name.lower().endswith(ext):
+            name = name[:-len(ext)]
+            break
+    cleaned = re.sub(r'[\s._-]', ' ', name)
+    return ' '.join(cleaned.split()).lower()
+
+def build_racing_keyboard(config, racing_hash=None, public_hash=None, name=None):
+    target_hashes = set()
     if racing_hash:
         if isinstance(racing_hash, str):
-            racing_hashes = [racing_hash]
-        elif isinstance(racing_hash, list):
-            racing_hashes = list(racing_hash)  # Copy list
-            
-    if public_hash and public_hash not in racing_hashes:
-        racing_hashes.append(public_hash)
-        
-    if not racing_hashes:
+            target_hashes.add(racing_hash.lower())
+        elif isinstance(racing_hash, (list, set, tuple)):
+            for h in racing_hash:
+                if h:
+                    target_hashes.add(str(h).lower())
+
+    if public_hash:
+        target_hashes.add(str(public_hash).lower())
+
+    clean_target_name = _clean_name(name) if name else ""
+
+    if not target_hashes and not clean_target_name:
         return None
-        
+
     racing_torrents = []
     try:
         racing_client = clients.get_client(config.get("racing_client"))
@@ -78,56 +94,48 @@ def build_racing_keyboard(config, racing_hash, public_hash=None):
             racing_torrents = racing_client.get_torrents_info()
     except Exception as e:
         logger.error(f"Failed to fetch racing client info for Telegram buttons: {e}")
-        
-    buttons = []
-    actual_racing_hashes = []
-    for rh in racing_hashes:
-        domain = ""
-        found = False
-        for t in racing_torrents:
-            if t["hash"].lower() == rh.lower():
-                found = True
-                trackers = t.get("trackers", [])
-                if trackers:
-                    domain = trackers[0].replace("https://", "").replace("http://", "").split("/")[0]
-                break
-                
-        if not found:
-            continue
-            
-        actual_racing_hashes.append(rh)
+        return None
 
-    # Re-build buttons in 2 columns
+    matched_torrents = {}  # hash -> torrent_dict
+    for t in racing_torrents:
+        th = t.get("hash", "").lower()
+        if not th:
+            continue
+        if th in target_hashes:
+            matched_torrents[th] = t
+            continue
+        if clean_target_name:
+            t_name = t.get("name", "")
+            if t_name.lower() == (name or "").lower() or _clean_name(t_name) == clean_target_name:
+                matched_torrents[th] = t
+
+    if not matched_torrents:
+        return None
+
     all_individual_buttons = []
-    for rh in actual_racing_hashes:
+    for rh, t in matched_torrents.items():
         domain = ""
-        for t in racing_torrents:
-            if t["hash"].lower() == rh.lower():
-                trackers = t.get("trackers", [])
-                if trackers:
-                    domain = trackers[0].replace("https://", "").replace("http://", "").split("/")[0]
-                break
-        
-        # We need to extract the existing button prefix (which could be the trash can emoji)
-        # However, since the emoji was injected previously via a literal '🗑', 
-        # let's just safely use the literal!
+        trackers = t.get("trackers", [])
+        if trackers:
+            domain = trackers[0].replace("https://", "").replace("http://", "").split("/")[0]
         button_text = f"🗑 {domain} ({rh[:6]})" if domain else f"🗑 {rh[:6]}"
         all_individual_buttons.append({
             "text": button_text,
             "callback_data": f"del_race:{rh}"
         })
-        
+
+    buttons = []
     for i in range(0, len(all_individual_buttons), 2):
         buttons.append(all_individual_buttons[i:i+2])
-        
-    if len(actual_racing_hashes) > 1:
+
+    if len(all_individual_buttons) > 1:
         buttons.append([
             {
                 "text": "🗑️ Remove All from Race Client",
                 "callback_data": "del_all"
             }
         ])
-        
+
     if buttons:
         return {"inline_keyboard": buttons}
     return None
@@ -140,23 +148,22 @@ def send_already_seeding_notification(config, name, size, tracker, racing_hashes
     chat_id = tg_config.get("chat_id")
     if not bot_token or not chat_id:
         return
-        
+
     size_formatted = format_size(size)
     tracker_clean = tracker.replace("https://", "").replace("http://", "").split("/")[0]
-    
+
     text = f"⚡ <b>[ALREADY_SEEDING]</b>\n<code>{name}</code> ({size_formatted})\nTracker: {tracker_clean}\nStatus: Already seeding from FUSE mount"
-    
+
     payload = {
         "chat_id": chat_id,
         "text": text,
         "parse_mode": "HTML"
     }
-    
-    if racing_hashes or info_hash:
-        keyboard = build_racing_keyboard(config, racing_hashes, public_hash=info_hash)
-        if keyboard:
-            payload["reply_markup"] = keyboard
-        
+
+    keyboard = build_racing_keyboard(config, racing_hashes, public_hash=info_hash, name=name)
+    if keyboard:
+        payload["reply_markup"] = keyboard
+
     call_telegram_api("sendMessage", payload, bot_token)
 
 def build_telegram_message_text(job, info_hash):
@@ -242,10 +249,9 @@ def update_telegram_status(config, job, info_hash, racing_hashes=None):
         "parse_mode": "HTML"
     }
     
-    if racing_hashes or info_hash:
-        keyboard = build_racing_keyboard(config, racing_hashes, public_hash=info_hash)
-        if keyboard:
-            payload["reply_markup"] = keyboard
+    keyboard = build_racing_keyboard(config, racing_hashes, public_hash=info_hash, name=job.get("name"))
+    if keyboard:
+        payload["reply_markup"] = keyboard
             
     if not message_id:
         res = call_telegram_api("sendMessage", payload, bot_token)
