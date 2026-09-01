@@ -144,6 +144,8 @@ last_dangling_search_times = {}
 
 def run_rclone_move_async(info_hash, cmd):
     from state_machine import RCLONE_LOCK
+    with RCLONE_LOCK:
+        rclone_status[info_hash] = "running"
     def target():
         with RCLONE_LOCK:
             rclone_status[info_hash] = "running"

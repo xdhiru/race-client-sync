@@ -222,6 +222,8 @@ class TorrentJobStateMachine:
             status = self.rclone_status.get(self.info_hash)
             if status is None:
                 status = self.rclone_status.get(self.info_hash.lower())
+            all_keys = list(self.rclone_status.keys())
+        logger.debug(f"[{self.info_hash[:8]}] rclone_moving tick: status={status!r}, key={self.info_hash!r}, keys={all_keys}")
 
         if status is None:
             return self._maybe_start_rclone()
@@ -234,12 +236,19 @@ class TorrentJobStateMachine:
     def _maybe_start_rclone(self):
         max_jobs = self.config.get("rclone", {}).get("max_parallel_jobs", 2)
         with RCLONE_LOCK:
+            existing = self.rclone_status.get(self.info_hash)
+            if existing is None:
+                existing = self.rclone_status.get(self.info_hash.lower())
+            if existing is not None:
+                return Transition.WAITING
+
             running = sum(1 for v in self.rclone_status.values() if v == "running")
-        if running >= max_jobs:
-            return Transition.WAITING
+            if running >= max_jobs:
+                return Transition.WAITING
+
         try:
             from torrent_sync import run_rclone_move_async
-            local_dir = self.config["paths"]["local_save_path"]
+            local_dir = self.config.get("paths", {}).get("local_save_path", "")
             remote_target, _ = get_job_remote_paths(self.config, self.job["name"])
             rclone_transfers = self.config.get("rclone", {}).get("transfers", 2)
             cmd = _build_rclone_cmd(self.job, local_dir, remote_target, rclone_transfers)
